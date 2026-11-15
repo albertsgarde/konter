@@ -232,13 +232,12 @@ subscription = "power"
 }
 
 /// Rows that look alike (same day, amount and running balance) are told
-/// apart by counting them in file order, which is newest first. An export
-/// taken mid-day counts the day's rows differently from a later export of the
-/// whole day, so a later row is matched with an earlier one. The result is an
-/// "overlap conflict" error that nothing can fix (raw files are never edited),
-/// and one transaction takes the other's description.
+/// apart by counting them. Counted in file order, which is newest first, an
+/// export taken mid-day counts the day's rows differently from a later export
+/// of the whole day, so a later row was matched with an earlier one: an
+/// "overlap conflict" error that nothing can fix (raw files are never
+/// edited), and one transaction took the other's description.
 #[test]
-#[ignore = "bug: a mid-day export and a later full one are taken to disagree"]
 fn a_mid_day_export_and_a_later_one_agree() {
     let config = config(NORDEA);
     // Alice sends 100 for a club dinner, it's paid on, then Carol sends 100.
@@ -268,7 +267,6 @@ fn a_mid_day_export_and_a_later_one_agree() {
     let rows = |build: &Build| -> Vec<(String, String)> {
         build.loaded.sources["bank:a"].txs.iter().map(|t| (t.id.clone(), t.description.clone())).collect()
     };
-    // Today: Carol's transaction is described as "MobilePay Alice".
     assert_eq!(rows(&both), rows(&alone));
     assert!(!both.findings.has_errors(), "{}", both.findings.render(true));
 }

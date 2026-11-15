@@ -294,7 +294,7 @@ fn merging_whole_day_exports_is_like_merging_one() {
 }
 
 #[test]
-#[ignore = "bug: a mid-day export is matched up wrongly (see breakage.rs)"]
+#[ignore = "bug: the first day's order ignores the next day (see breakage.rs)"]
 fn merging_exports_taken_during_the_day_is_like_merging_one() {
     if let Some(report) = check_merging(true, 500) {
         panic!("{report}");

@@ -178,7 +178,13 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
             last: file.rows.iter().map(|t| t.booked).max(),
             exported: file.exported,
         };
-        for row in file.rows {
+        // Rows that look alike are told apart by counting them, oldest first:
+        // every export of a day starts at the day's beginning, but one taken
+        // during the day ends partway, so counting from the newest (the order
+        // most files are in) would pair up different rows.
+        let mut rows = file.rows;
+        rows.sort_by_key(|t| (t.booked, t.time, t.order_hint));
+        for row in rows {
             let base = match scheme_of(&row) {
                 Scheme::Balance => Key::Balance(row.booked, row.amount, row.balance_after.unwrap(), 0),
                 Scheme::BankRef => Key::BankRef(row.bank_ref.clone().unwrap()),

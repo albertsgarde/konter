@@ -82,6 +82,7 @@ A posting with both `amount` and `balance` asserts the balance. Hand-written tra
   - The purchase date is kept (`purchased:` tag), but **booking date** is the transaction date throughout.
 - **Merging per source:**
   - Deduplicate overlapping files; a disagreement between files is an error. Copies in the same format must agree on everything, booking date and amount included: rows told apart by the bank's reference alone would otherwise let a reference the bank used twice swallow a transaction.
+  - Rows that look alike (same day, amount and running balance, say) are told apart by counting them oldest first within each file. Every export of a day starts at its beginning, while one taken during the day ends partway, so the n-th of a kind is the same row in each.
   - Report rows missing from a file that covers their date.
   - Order rows so the running balance chains; a break is an error.
   - `cutover` picks CSV before a date and API data from it on. Not needed today: the two agree.
