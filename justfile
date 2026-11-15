@@ -26,8 +26,11 @@ setup:
     if [ -d .jj ]; then
         jj config set --repo snapshot.auto-track '~(root:"books" | root:"human_notes")'
     fi
-    if [ ! -f "{{books}}/config/sources.toml" ]; then
-        echo "No books in {{books}}/ yet: clone your books repo there."
+    if [ ! -e {{quote(books)}} ]; then
+        {{konter}} init {{quote(books)}}
+        echo "To use books you already have instead, remove {{books}}/ and clone them there."
+    elif [ ! -f {{quote(books / "config/sources.toml")}} ]; then
+        echo "{{books}}/ has no config/sources.toml: clone your books there, or \`konter init\` new ones."
     fi
     echo "Set up."
 
