@@ -1,0 +1,81 @@
+# Exercises every kind of rule output, plus the things that should be reported.
+
+[[subscription]]
+name = "salary"
+kind = "income"
+account = "income:salary"
+payee = "Salary due"
+every = "1 month"
+first = 2026-01-02
+grace = "3 days"
+notice = "1 month"
+prices = [
+  { from = 2026-01-01, amount = 10000 },
+  { from = 2026-03-01, amount = 11000 },
+  { from = 2026-06-01, amount = 12000 },
+]
+
+[[rule]]
+name = "salary"
+when = { description = "SALARY", direction = "in" }
+subscription = "salary"
+payee = "Salary"
+tags = { employer = "acme" }
+
+[[rule]]
+name = "coffee"
+when = { description_re = '(?i)coffee' }
+account = "expenses:coffee"
+
+# Same priority as "coffee" for the Lunar row: reported as ambiguous.
+[[rule]]
+name = "coffee-lunar"
+when = { source = "lunar:b", description = "Coffee Shop" }
+account = "expenses:coffee"
+
+[[rule]]
+name = "savings"
+when = { source = "bank:a", description = "Savings" }
+transfer = "bank:savings"
+
+[[rule]]
+name = "top-up"
+when = { counterparty = "DK0000000000000555" }
+transfer = "lunar:b"
+
+[[rule]]
+name = "from-bank"
+when = { source = "lunar:b", description = "Overførsel", direction = "in" }
+transfer = "bank:a"
+
+[[rule]]
+name = "never-matches"
+when = { description = "Nope" }
+account = "expenses:coffee"
+
+[pin."ba-2026-01-30-3d3806"]
+payee = "Concert tickets"
+note = "A friend owes me for one"
+split = [
+  { account = "expenses:concerts", amount = 600 },
+  { account = "assets:receivable:friend", rest = true },
+]
+
+[pin."ba-2026-01-10-58c981"]
+transactions = [
+  { payee = "Insurance (prepaid)", postings = [
+      { account = "@bank" },
+      { account = "assets:prepaid", rest = true } ] },
+  { date = 2026-12-31, payee = "Insurance 2026", postings = [
+      { account = "assets:prepaid", amount = "@amount" },
+      { account = "expenses:insurance", rest = true } ] },
+]
+
+[pin."ba-2026-01-15-64ffb9"]
+ignore = "charge and refund cancel out"
+
+[pin."ba-2026-01-15-4c22de"]
+ignore = "charge and refund cancel out"
+
+[pin."ba-2026-01-31-000000"]
+unknown = "this transaction doesn't exist: reported as a dead pin"

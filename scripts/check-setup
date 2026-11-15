@@ -1,0 +1,16 @@
+#!/bin/sh
+# Fails unless this clone has the guards that keep books/ and human_notes/ out
+# of the tool's history. `just setup` puts them in place.
+cd "$(dirname "$0")/.." || exit 1
+ok=true
+for path in /books/ /human_notes/; do
+    grep -qxF "$path" .git/info/exclude 2>/dev/null || ok=false
+done
+[ "$(git config core.hooksPath)" = .githooks ] || ok=false
+if [ -d .jj ]; then
+    jj config get snapshot.auto-track 2>/dev/null | grep -q 'root:"books"' || ok=false
+fi
+if [ "$ok" = false ]; then
+    echo "This clone isn't set up yet: run \`just setup\`." >&2
+    exit 1
+fi

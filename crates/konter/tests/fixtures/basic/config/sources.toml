@@ -1,0 +1,21 @@
+[books]
+start = 2026-01-01
+
+[sources."bank:a"]
+bank = "nordea"
+number = "1234567890"
+ledger = "assets:bank:a"
+id_prefix = "ba"
+formats = ["nordea-csv"]
+
+[sources."lunar:b"]
+bank = "lunar"
+number = "555"
+ledger = "assets:bank:b"
+id_prefix = "lb"
+formats = ["lunar-csv"]
+unmatched = "warn"
+
+[sources."bank:savings"]
+bank = "nordea"
+ledger = "assets:bank:savings"

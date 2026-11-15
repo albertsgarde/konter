@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+__SITE_CSS__
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; }
+  .controls { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+
+  main { flex: 1; overflow: auto; position: relative; }
+  table { border-collapse: separate; border-spacing: 0; font-variant-numeric: tabular-nums; min-width: 100%; }
+  th, td { padding: 4px 10px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  thead th {
+    position: sticky; top: 0; z-index: 2; background: var(--bg);
+    font-weight: 600; text-align: right; vertical-align: bottom; color: var(--muted);
+  }
+  thead th .yr { display: block; font-weight: 400; font-size: 11px; }
+  thead th[data-sort] { cursor: pointer; user-select: none; }
+  thead th[data-sort]:hover { color: var(--fg); }
+  thead th.sorted { color: var(--accent); }
+  .arrow { font-size: 10px; margin-left: 2px; }
+  th.acct, td.acct { position: sticky; left: 0; z-index: 1; background: var(--bg); text-align: left; }
+  thead th.acct { z-index: 3; }
+  td.acct { min-width: 240px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; border-right: 1px solid var(--line); }
+  th.acct { border-right: 1px solid var(--line); }
+  td.num { text-align: right; cursor: pointer; min-width: 68px; }
+  td.num:hover { outline: 1px solid var(--accent); outline-offset: -1px; }
+  td.num.empty { cursor: default; }
+  td.num.empty:hover { outline: none; }
+  td.num.sel { outline: 2px solid var(--accent); outline-offset: -2px; }
+  td.neg { color: var(--neg); }
+  th.sum, td.sum { font-weight: 600; }
+  th.edge, td.edge { border-right: 1px solid var(--line); }
+  .star { color: var(--accent); }
+  tr.total td { font-weight: 600; background: var(--bg-alt); }
+  tr.total td.acct { background: var(--bg-alt); }
+  tr.lvl1 td.acct { font-weight: 600; }
+  .toggle {
+    font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+  }
+  .caret { display: inline-block; width: 12px; color: var(--muted); }
+  .unmapped { font-style: italic; color: var(--muted); }
+  .pot { color: var(--accent); }
+
+  aside {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(460px, 100vw);
+    background: var(--bg); box-shadow: var(--panel-shadow); z-index: 10;
+    display: flex; flex-direction: column; transform: translateX(105%); transition: transform .15s ease;
+  }
+  aside.open { transform: none; }
+  aside .head { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: start; }
+  aside h2 { font-size: 16px; margin: 0; }
+  aside .close { margin-left: auto; }
+  aside ol { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; }
+  aside li { display: grid; grid-template-columns: 82px 1fr auto; gap: 2px 10px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+  aside li .date { color: var(--muted); }
+  aside li .amt { text-align: right; font-variant-numeric: tabular-nums; }
+  aside li .meta { grid-column: 2 / 4; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  aside .foot { padding: 10px 16px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; font-weight: 600; }
+  .nothing { padding: 24px 16px; color: var(--muted); }
+  footer { padding: 6px 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  __NAV__
+  <span class="sub" id="asof"></span>
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Months shown" id="range">
+      <button data-range="6">6 months</button>
+      <button data-range="12">12 months</button>
+      <button data-range="all">All</button>
+    </div>
+    <button class="btn" id="setaside" title="Count money moved into accounts set aside for something (such as donations) as money out, and leave out what's paid from them">Money set aside</button>
+    <button class="btn" id="spread" title="Show subscriptions paid yearly or quarterly as an equal share in each month they cover">Spread subscriptions</button>
+    <button class="btn" id="hideempty" title="Hide accounts with nothing booked in the months shown">Hide empty rows</button>
+    <button class="btn" id="expand">Expand all</button>
+    <button class="btn" id="collapse">Collapse all</button>
+  </div>
+</header>
+<main><table id="t"></table></main>
+<footer id="foot"></footer>
+<aside id="panel" aria-live="polite">
+  <div class="head">
+    <div><h2 id="ptitle"></h2><div class="sub" id="psub"></div></div>
+    <button class="btn close" id="pclose" aria-label="Close">Close</button>
+  </div>
+  <ol id="plist"></ol>
+  <div class="foot"><span id="pcount"></span><span id="psum"></span></div>
+</aside>
+<script id="data" type="application/json">__REPORT_DATA__</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById("data").textContent);
+// The same page shows spending (expense accounts, and money set aside) or
+// income (income accounts, as positive amounts): DATA.kind says which.
+const INCOME = DATA.kind === "income";
+const TOP = INCOME ? "income:" : "expenses:";
+// The tree has a virtual root ("") above the top-level categories and the
+// "set-aside" group; rows are keyed by account without "expenses:"/"income:".
+const ROOT = "";
+const SET_ASIDE = "set-aside";
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const whole = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+const exact = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(DATA.kind + ":" + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(DATA.kind + ":" + k, JSON.stringify(v)); } catch {} },
+};
+
+// ── Data ────────────────────────────────────────────────────────────
+const rows = DATA.rows;
+for (const r of rows) r.key = r.a.startsWith(TOP) ? r.a.slice(TOP.length) : r.a;
+const hasSetAside = rows.some(r => r.key.startsWith(SET_ASIDE + ":"));
+const asOfMonth = DATA.asOf.slice(0, 7);
+const monthOf = d => d.slice(0, 7);
+const allMonths = (() => {
+  const first = rows.reduce((m, r) => (monthOf(r.d) < m ? monthOf(r.d) : m), asOfMonth);
+  const out = [];
+  let [y, m] = first.split("-").map(Number);
+  for (;;) {
+    const key = `${y}-${String(m).padStart(2, "0")}`;
+    if (key > asOfMonth) break;
+    out.push(key);
+    if (++m > 12) { m = 1; y++; }
+  }
+  return out;
+})();
+
+// ── State ───────────────────────────────────────────────────────────
+let range = store.get("range", "12");
+let spread = store.get("spread", true);
+let setAside = hasSetAside && store.get("setAside", true);
+let hideEmpty = store.get("hideEmpty", true);
+// Sort siblings by a column: "name", "total", "avg" or a month ("2026-10").
+let sort = store.get("sort", { key: "total", dir: "desc" });
+const expanded = new Set(store.get("expanded", []));
+let selected = null; // { path, key }
+
+// A subscription's due date (r.m months covered) spread evenly to the øre over
+// every month it covers, so each month shows what it really costs. A payment
+// due before the months shown still has its share in them, and one due at the
+// end has most of its shares in months not shown yet: so with spreading on, a
+// total over the months shown can differ from one without.
+const pad = n => String(n).padStart(2, "0");
+const daysIn = (y, m) => new Date(y, m, 0).getDate();
+function spreadOver(r) {
+  let [y, m] = monthOf(r.d).split("-").map(Number);
+  const day = Number(r.d.slice(8, 10));
+  const base = Math.trunc(r.v / r.m);
+  const extra = r.v - base * r.m; // fewer øre than parts; the first ones take one each
+  const of = `${exact.format(r.v / 100)} due ${r.d}`;
+  const parts = [];
+  for (let i = 0; i < r.m; i++) {
+    parts.push({
+      ...r,
+      d: `${y}-${pad(m)}-${pad(Math.min(day, daysIn(y, m)))}`,
+      v: base + (i < Math.abs(extra) ? Math.sign(extra) : 0),
+      n: `${i + 1}/${r.m} of ${of}`,
+    });
+    if (++m > 12) { m = 1; y++; }
+  }
+  return parts;
+}
+
+// Sums and counts per account path (and its ancestors) and month, in øre, both
+// as booked and spread. The page shows the one in use, but sorts by the amounts
+// as booked and shows a row if either has something in the months shown, so
+// turning spreading on or off never moves or hides a row.
+let active = [];
+const children = new Map(); // path -> Set(child path)
+let booked, spreadOut;      // { sums, counts }: path -> Map(month -> øre | postings)
+let sums, counts;           // the one in use
+function ancestors(key) {
+  const parts = key.split(":");
+  return [ROOT, ...parts.map((_, i) => parts.slice(0, i + 1).join(":"))];
+}
+function tally(list) {
+  const t = { sums: new Map(), counts: new Map() };
+  for (const r of list) {
+    for (const path of ancestors(r.key)) {
+      if (!t.sums.has(path)) { t.sums.set(path, new Map()); t.counts.set(path, new Map()); }
+      const m = t.sums.get(path), c = t.counts.get(path), month = monthOf(r.d);
+      m.set(month, (m.get(month) || 0) + r.v);
+      c.set(month, (c.get(month) || 0) + 1);
+    }
+  }
+  return t;
+}
+function index() {
+  // Set aside shown: what's paid from it was counted when it was set aside.
+  const base = rows.filter(r => (setAside ? !r.x : !r.key.startsWith(SET_ASIDE + ":")));
+  const spreadRows = base.flatMap(r => (r.m ? spreadOver(r) : [r]));
+  children.clear();
+  for (const r of base) {
+    const chain = ancestors(r.key);
+    for (let i = 1; i < chain.length; i++) {
+      if (!children.has(chain[i - 1])) children.set(chain[i - 1], new Set());
+      children.get(chain[i - 1]).add(chain[i]);
+    }
+  }
+  booked = tally(base);
+  spreadOut = tally(spreadRows);
+  active = spread ? spreadRows : base;
+  ({ sums, counts } = spread ? spreadOut : booked);
+}
+index();
+
+function visibleMonths() {
+  return range === "all" ? allMonths : allMonths.slice(-Number(range));
+}
+const sumIn = (t, path, months) => months.reduce((s, m) => s + (t.sums.get(path)?.get(m) || 0), 0);
+const countIn = (t, path, months) => months.reduce((s, m) => s + (t.counts.get(path)?.get(m) || 0), 0);
+const sumOf = (path, months) => sumIn({ sums, counts }, path, months);
+const countOf = (path, months) => countIn({ sums, counts }, path, months);
+
+// ── Table ───────────────────────────────────────────────────────────
+const table = document.getElementById("t");
+
+function monthLabel(key, i) {
+  const [y, m] = key.split("-");
+  const yr = i === 0 || m === "01" ? `<span class="yr">${y}</span>` : `<span class="yr">&nbsp;</span>`;
+  const star = key === asOfMonth ? `<span class="star">*</span>` : "";
+  return `${MONTH_NAMES[Number(m) - 1]}${star}${yr}`;
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const rootName = () => (INCOME ? "All income" : setAside ? "Money out" : "All expenses");
+const shortName = path => (path === ROOT ? rootName() : path === SET_ASIDE ? "set aside" : path.split(":").pop());
+const fullName = path => (path === ROOT ? rootName() : path === SET_ASIDE ? "set aside" : path.startsWith(SET_ASIDE + ":") ? "set aside: " + path.slice(SET_ASIDE.length + 1) : path);
+const isUnmapped = path => path.startsWith("unmatched") || path.startsWith("unknown");
+
+function render() {
+  const months = visibleMonths();
+  const full = months.filter(m => m !== asOfMonth);
+  const avgOf = path => (full.length ? sumOf(path, full) / full.length : 0);
+  // A month that's no longer shown sorts like the total.
+  const key = /^\d{4}-\d\d$/.test(sort.key) && !months.includes(sort.key) ? "total" : sort.key;
+  const th = (k, cls, title, inner) => {
+    const on = k === key;
+    const arrow = on ? `<span class="arrow">${sort.dir === "asc" ? "▲" : "▼"}</span>` : "";
+    const aria = on ? ` aria-sort="${sort.dir === "asc" ? "ascending" : "descending"}"` : "";
+    return `<th class="${cls} ${on ? "sorted" : ""}" data-sort="${k}"${aria} title="${title}">${inner}${arrow}</th>`;
+  };
+  const head = months.map((m, i) =>
+    th(m, "", `Sort by ${monthTitle(m)}${m === asOfMonth ? " (until " + DATA.asOf + ")" : ""}`, monthLabel(m, i))
+  ).join("");
+  let html = `<thead><tr>${th("name", "acct", "Sort by name", "Account")}` +
+    th("total", "sum", "Sort by total", `Total<span class="yr">&nbsp;</span>`) +
+    th("avg", "sum edge", "Sort by average over the full months shown (the current month is left out)", `Avg/mo<span class="yr">&nbsp;</span>`) +
+    `${head}</tr></thead><tbody>`;
+  // Sorting goes by the amounts as booked, spreading or not, so the order
+  // doesn't change when spreading is turned on or off.
+  const value = path =>
+    key === "total" ? sumIn(booked, path, months)
+    : key === "avg" ? (full.length ? sumIn(booked, path, full) / full.length : 0)
+    : booked.sums.get(path)?.get(key) || 0;
+  const compare = (a, b) => {
+    const byName = a.localeCompare(b);
+    if (key === "name") return sort.dir === "asc" ? byName : -byName;
+    const d = value(a) - value(b);
+    return (sort.dir === "asc" ? d : -d) || byName;
+  };
+
+  const line = (path, depth) => {
+    const values = months.map(m => sums.get(path)?.get(m) || 0);
+    // Shade the months above the account's typical (median) month, more the
+    // further above, so a steady account stays plain and spikes stand out.
+    const sorted = [...values].sort((a, b) => a - b);
+    const median = sorted[Math.floor((sorted.length - 1) / 2)];
+    const max = Math.max(...values);
+    const total = values.reduce((a, b) => a + b, 0);
+    const avg = avgOf(path);
+    // With "Hide empty rows" on, only accounts with postings in the months shown.
+    const kids = [...(children.get(path) || [])]
+      .filter(k => !hideEmpty || countIn(booked, k, months) + countIn(spreadOut, k, months) > 0);
+    const open = path === ROOT || expanded.has(path);
+    const caret = kids.length && path !== ROOT ? (open ? "▾" : "▸") : "";
+    const name = `<span class="${isUnmapped(path) ? "unmapped" : ""} ${path === SET_ASIDE ? "pot" : ""}">${esc(shortName(path))}</span>`;
+    const label = kids.length && path !== ROOT
+      ? `<button class="toggle" data-toggle="${esc(path)}" aria-expanded="${open}"><span class="caret">${caret}</span>${name}</button>`
+      : `<span class="caret">${caret}</span>${name}`;
+    const cls = path === ROOT ? "total" : `lvl${depth}`;
+    const cell = (v, key, n, extra = "", heat = true) => {
+      const above = heat && path !== ROOT && v > median && max > median ? (v - median) / (max - median) : 0;
+      const shade = above > 0 ? ` style="background: rgba(var(--heat), ${(0.08 + 0.32 * above).toFixed(3)})"` : "";
+      const isSel = selected && selected.path === path && selected.key === key;
+      // No postings: an empty cell. Postings that cancel out: a 0 you can open.
+      const text = v ? whole.format(v / 100) : n ? "0" : "";
+      return `<td class="num ${extra} ${v < 0 ? "neg" : ""} ${isSel ? "sel" : ""} ${n ? "" : "empty"}" data-path="${esc(path)}" data-key="${key}"${shade}>${text}</td>`;
+    };
+    const n = countOf(path, months);
+    html += `<tr class="${cls}"><td class="acct" style="padding-left:${10 + Math.max(0, depth - 1) * 18}px" title="${esc(fullName(path))}">${label}</td>` +
+      cell(total, "total", n, "sum", false) + cell(Math.round(avg), "avg", countOf(path, full), "sum edge", false) +
+      values.map((v, i) => cell(v, months[i], counts.get(path)?.get(months[i]) || 0)).join("") + `</tr>`;
+    if (open) kids.sort(compare).forEach(k => line(k, depth + 1));
+  };
+  if (sums.has(ROOT)) line(ROOT, 0);
+  html += "</tbody>";
+  table.innerHTML = html;
+
+  document.querySelectorAll("#range button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.range === range)));
+  document.getElementById("spread").setAttribute("aria-pressed", String(spread));
+  document.getElementById("setaside").setAttribute("aria-pressed", String(setAside));
+  document.getElementById("hideempty").setAttribute("aria-pressed", String(hideEmpty));
+}
+
+table.addEventListener("click", e => {
+  const head = e.target.closest("th[data-sort]");
+  if (head) {
+    const k = head.dataset.sort;
+    // The same column again flips the order; a new one starts with the
+    // biggest amounts first, or A–Z for names.
+    sort = sort.key === k ? { key: k, dir: sort.dir === "asc" ? "desc" : "asc" } : { key: k, dir: k === "name" ? "asc" : "desc" };
+    store.set("sort", sort);
+    render();
+    return;
+  }
+  const toggle = e.target.closest("[data-toggle]");
+  if (toggle) {
+    const p = toggle.dataset.toggle;
+    expanded.has(p) ? expanded.delete(p) : expanded.add(p);
+    store.set("expanded", [...expanded]);
+    render();
+    return;
+  }
+  const td = e.target.closest("td.num:not(.empty)");
+  if (!td) return;
+  // The open cell again closes the panel; another one switches to it.
+  if (selected && selected.path === td.dataset.path && selected.key === td.dataset.key) closePanel();
+  else openPanel(td.dataset.path, td.dataset.key);
+});
+
+document.getElementById("range").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  range = b.dataset.range;
+  store.set("range", range);
+  render();
+  if (selected) openPanel(selected.path, selected.key);
+});
+document.getElementById("setaside").hidden = !hasSetAside;
+// Nothing to spread: no subscription here is billed less often than monthly.
+document.getElementById("spread").hidden = !rows.some(r => r.m);
+document.getElementById("setaside").addEventListener("click", () => {
+  setAside = !setAside;
+  store.set("setAside", setAside);
+  index();
+  render();
+  if (selected) openPanel(selected.path, selected.key);
+});
+document.getElementById("spread").addEventListener("click", () => {
+  spread = !spread;
+  store.set("spread", spread);
+  index();
+  render();
+  if (selected) openPanel(selected.path, selected.key);
+});
+document.getElementById("hideempty").addEventListener("click", () => {
+  hideEmpty = !hideEmpty;
+  store.set("hideEmpty", hideEmpty);
+  render();
+});
+document.getElementById("expand").addEventListener("click", () => {
+  children.forEach((_, p) => p !== ROOT && expanded.add(p));
+  store.set("expanded", [...expanded]);
+  render();
+});
+document.getElementById("collapse").addEventListener("click", () => {
+  expanded.clear();
+  store.set("expanded", []);
+  render();
+});
+
+// ── Transactions panel ──────────────────────────────────────────────
+const panel = document.getElementById("panel");
+
+function monthTitle(key) {
+  const [y, m] = key.split("-");
+  return `${MONTH_NAMES[Number(m) - 1]} ${y}`;
+}
+
+function openPanel(path, key) {
+  const months = key === "total" || key === "avg" ? visibleMonths() : [key];
+  const inMonths = new Set(months);
+  const within = k => path === ROOT || k === path || k.startsWith(path + ":");
+  const list = active
+    .filter(r => within(r.key) && inMonths.has(monthOf(r.d)))
+    .sort((a, b) => b.d.localeCompare(a.d) || b.v - a.v);
+  selected = { path, key };
+  render();
+
+  document.getElementById("ptitle").textContent = fullName(path);
+  document.getElementById("psub").textContent = months.length === 1
+    ? monthTitle(months[0]) + (months[0] === asOfMonth ? ` (until ${DATA.asOf})` : "")
+    : `${monthTitle(months[0])} – ${monthTitle(months[months.length - 1])}`;
+  const prefix = path === ROOT ? "" : path + ":";
+  document.getElementById("plist").innerHTML = list.length ? list.map(r => {
+    // Where in the opened account the row sits: the rest of its path.
+    const sub = r.key === path ? "" : path === ROOT ? fullName(r.key) : r.key.slice(prefix.length);
+    // A bare reference number says nothing; real bank text does.
+    const bank = r.b && r.b !== r.p && !/^\d+$/.test(r.b) ? `bank: ${r.b}` : "";
+    const meta = [sub, r.n || "", bank, r.id || ""].filter(Boolean).map(esc).join(" · ");
+    return `<li><span class="date">${r.d}</span><span>${esc(r.p)}</span>` +
+      `<span class="amt ${r.v < 0 ? "neg" : ""}">${exact.format(r.v / 100)}</span>` +
+      (meta ? `<span class="meta">${meta}</span>` : "") + `</li>`;
+  }).join("") : `<li class="nothing">Nothing booked here.</li>`;
+  document.getElementById("pcount").textContent = `${list.length} posting${list.length === 1 ? "" : "s"}`;
+  document.getElementById("psum").textContent = `${exact.format(list.reduce((s, r) => s + r.v, 0) / 100)} ${DATA.currency}`;
+  panel.classList.add("open");
+}
+
+function closePanel() {
+  panel.classList.remove("open");
+  selected = null;
+  render();
+}
+document.getElementById("pclose").addEventListener("click", closePanel);
+// A click anywhere but the panel or a number closes it (numbers are handled
+// above). The target may be gone from the page by now if the click re-drew the
+// table, but it still knows its old parents.
+document.addEventListener("click", e => {
+  if (!selected || e.target.closest("#panel") || e.target.closest("td.num:not(.empty)")) return;
+  closePanel();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape" && selected) closePanel(); });
+
+// ── Start ───────────────────────────────────────────────────────────
+document.getElementById("asof").textContent = `Books as of ${DATA.asOf} · amounts in ${DATA.currency}`;
+document.getElementById("foot").textContent =
+  "Click an account to open it, a number to see its transactions (click anywhere else to close them), and a column heading to sort by it. " +
+  "* the current month, so far. Shading marks months above the account's usual month. " +
+  (rows.some(r => r.m)
+    ? "With \u201cSpread subscriptions\u201d on, a yearly or quarterly subscription counts an equal share in each month it covers; rows keep their order and stay shown either way, since sorting and hiding go by the amounts as booked."
+    : "") +
+  (hasSetAside
+    ? " With \u201cMoney set aside\u201d on, money moved into an account set aside for something (such as donations) counts as money out, " +
+      "and what's later paid from it is left out, so nothing counts twice."
+    : "");
+render();
+const main = document.querySelector("main");
+main.scrollLeft = main.scrollWidth;
+</script>
+</body>
+</html>

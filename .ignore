@@ -1,0 +1,3 @@
+# For ripgrep and editors' search (git and jj don't read this file): search the
+# books too, though .gitignore keeps them out of this repo.
+!/books/

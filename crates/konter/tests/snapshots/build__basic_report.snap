@@ -1,0 +1,26 @@
+---
+source: crates/konter/tests/build.rs
+expression: build.findings.render(true)
+---
+✗ ambiguous          1 transactions match several rules of equal priority
+      lb-2026-01-10-b23a52  2026-01-10       -30.00  "Coffee Shop": coffee, coffee-lunar
+✗ not mapped         bank:a: 1 of 9 not mapped (100% of amount mapped)
+      ba-2026-01-20-b7634b  2026-01-20       -25.00  "Mystery"
+      → `konter unmatched bank:a` prints a rule stub for each
+⚠ opening balance    lunar:b: data starts 2026-01-10, but the opening balance (50.00) is booked at 2026-01-01; set `start` for this source if the account didn't exist yet
+⚠ not mapped         lunar:b: 1 of 2 not mapped (94% of amount mapped)
+      lb-2026-01-10-b23a52  2026-01-10       -30.00  "Coffee Shop"
+      → `konter unmatched lunar:b` prints a rule stub for each
+⚠ dead rule          2 rules match nothing
+      rule "never-matches" (config/rules.toml)
+      pin "ba-2026-01-31-000000" (config/rules.toml): no such transaction
+⚠ deficit            salary: 10000.00 DKK owed, unpaid since 2026-02-02 (config/rules.toml)
+· ignored            2 transactions
+      ba-2026-01-15-64ffb9  2026-01-15      -100.00  "Charge": charge and refund cancel out
+      ba-2026-01-15-4c22de  2026-01-15       100.00  "Refund": charge and refund cancel out
+✓ manifest           2 raw files match data/MANIFEST
+✓ data               bank:a: 9 transactions 2026-01-02 … 2026-01-30 from 1 files, opening balance 1050.00, running balance unbroken
+✓ data               lunar:b: 2 transactions 2026-01-10 … 2026-01-29 from 1 files, opening balance 50.00, running balance unbroken
+✓ books              14 transactions balance, 11 balance assertions hold, accounts declared
+
+2 errors, 4 warnings

@@ -1,0 +1,43 @@
+{
+  "acct_fetch": 1,
+  "fetched_at": "2026-02-03T10:00:00Z",
+  "bank": "nordea",
+  "account_uid": "00000000-0000-0000-0000-00000000000a",
+  "date_from": "2026-01-15",
+  "pages": [
+    {
+      "transactions": [
+        {"entry_reference": "R-0115-1", "status": "BOOK", "booking_date": "2026-01-15",
+         "transaction_amount": {"currency": "DKK", "amount": "100.00"}, "credit_debit_indicator": "DBIT",
+         "remittance_information": ["Charge"]},
+        {"entry_reference": "R-0120-1", "status": "BOOK", "booking_date": "2026-01-20",
+         "transaction_amount": {"currency": "DKK", "amount": "25.00"}, "credit_debit_indicator": "DBIT",
+         "remittance_information": ["Mystery"]},
+        {"entry_reference": "R-0128-1", "status": "BOOK", "booking_date": "2026-01-28",
+         "transaction_amount": {"currency": "DKK", "amount": "500.00"}, "credit_debit_indicator": "DBIT",
+         "creditor": {"name": "Lunar"}, "creditor_account": {"iban": "DK0000000000000555"},
+         "remittance_information": ["Top up"]}
+      ],
+      "continuation_key": "page2"
+    },
+    {
+      "transactions": [
+        {"entry_reference": "R-0130-1", "status": "BOOK", "booking_date": "2026-01-30",
+         "transaction_amount": {"currency": "DKK", "amount": "1200.00"}, "credit_debit_indicator": "DBIT",
+         "remittance_information": ["Concert tickets"]},
+        {"entry_reference": "R-0202-1", "status": "BOOK", "booking_date": "2026-02-02",
+         "transaction_amount": {"currency": "DKK", "amount": "10000.00"}, "credit_debit_indicator": "CRDT",
+         "debtor": {"name": "ACME"}, "remittance_information": ["SALARY"]},
+        {"entry_reference": "0", "status": "PDNG", "booking_date": "2026-02-03",
+         "transaction_amount": {"currency": "DKK", "amount": "9.00"}, "credit_debit_indicator": "DBIT",
+         "remittance_information": ["Pending"]}
+      ]
+    }
+  ],
+  "balances": {
+    "balances": [
+      {"name": "Booked", "balance_type": "ITBD", "reference_date": "2026-02-03",
+       "balance_amount": {"currency": "DKK", "amount": "17375.00"}}
+    ]
+  }
+}

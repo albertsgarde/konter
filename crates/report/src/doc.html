@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+__SITE_CSS__
+  main.doc { padding: 4px 16px 32px; max-width: 1400px; }
+  h2 { font-size: 16px; margin: 28px 0 8px; }
+  p.lead { font-size: 16px; margin: 16px 0; }
+  p.note { color: var(--muted); font-size: 12px; max-width: 900px; margin: 8px 0; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .muted { color: var(--muted); }
+  .scroll { overflow-x: auto; }
+  table.data { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.data th, table.data td { padding: 4px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+  table.data th { color: var(--muted); font-weight: 600; }
+  table.data .num { text-align: right; }
+  table.data td.desc { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+  table.data td.id { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  table.data tbody tr:hover td { background: var(--bg-alt); }
+  table.data tr.total td { font-weight: 600; background: var(--bg-alt); }
+  table.sortable th[data-sort] { cursor: pointer; user-select: none; }
+  table.sortable th[data-sort]:hover { color: var(--fg); }
+  table.sortable th.sorted { color: var(--accent); }
+  table.sortable .arrow { font-size: 10px; margin-left: 2px; }
+  .views { margin: 0 0 8px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 16px; max-width: 900px; }
+  .card { display: block; padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; color: inherit; text-decoration: none; }
+  .card:hover { border-color: var(--accent); }
+  .card h2 { margin: 0 0 4px; color: var(--accent); }
+  .card p { margin: 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+__NAV__
+  <span class="sub">__SUBTITLE__</span>
+</header>
+<main class="doc">
+__BODY__
+</main>
+</body>
+</html>

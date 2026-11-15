@@ -1,0 +1,23 @@
+[books]
+start = 2026-01-01
+
+[banks.nordea]
+enable_banking = { aspsp = "Nordea", country = "DK" }
+
+# CSV until the cutover, Enable Banking (without running balances) from it on.
+[sources."bank:a"]
+bank = "nordea"
+number = "1234567890"
+ledger = "assets:bank:a"
+id_prefix = "ba"
+formats = ["nordea-csv", "enable-banking"]
+cutover = 2026-01-20
+
+# Enable Banking only, no running balances: opening balance from the snapshot.
+[sources."other:c"]
+bank = "other"
+number = "42"
+ledger = "assets:bank:c"
+id_prefix = "oc"
+formats = ["enable-banking"]
+unmatched = "allow"

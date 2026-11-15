@@ -1,0 +1,14 @@
+# Every account the rules and config/transactions.toml may use, so a typo in
+# one fails the build. konter writes them into ledger/generated.journal, along
+# with the accounts it invents itself (bank accounts, transfers, fallbacks,
+# subscription balances, opening balances). The books' currency is
+# `currency` in config/sources.toml.
+
+accounts = [
+    "assets:prepaid",
+    "assets:receivable:friend",
+    "expenses:coffee",
+    "expenses:concerts",
+    "expenses:insurance",
+    "income:salary",
+]

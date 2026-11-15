@@ -1,0 +1,8 @@
+/target
+/crates/konter/tests/fixtures/*/ledger/generated.journal
+/crates/konter/tests/fixtures/*/ledger/forecast.journal
+
+# Private, never part of this repo: the books (their own repo) and my notes.
+# `just setup` adds the same to .git/info/exclude and jj's snapshot.auto-track.
+/books/
+/human_notes/

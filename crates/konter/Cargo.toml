@@ -1,0 +1,27 @@
+[package]
+name = "konter"
+description = "The command line: turns raw bank data into hledger books using a rules file"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "konter"
+path = "src/main.rs"
+
+[dependencies]
+konter-diagnostics.workspace = true
+konter-engine.workspace = true
+konter-report.workspace = true
+konter-repo.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+jiff.workspace = true
+rust_decimal.workspace = true
+serde_json.workspace = true
+
+[target."cfg(unix)".dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

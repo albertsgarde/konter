@@ -1,0 +1,9 @@
+#!/bin/sh
+# Refuse commits that touch the private folders. jj runs no git hooks; for jj,
+# snapshot.auto-track does this job (`just setup` sets both up).
+bad=$(git diff --cached --name-only | grep -E '^(books|human_notes)(/|$)')
+if [ -n "$bad" ]; then
+    echo "Refusing to commit private paths (books/ and human_notes/ never go in this repo):" >&2
+    echo "$bad" >&2
+    exit 1
+fi

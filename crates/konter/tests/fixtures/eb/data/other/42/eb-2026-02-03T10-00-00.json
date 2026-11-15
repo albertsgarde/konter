@@ -1,0 +1,23 @@
+{
+  "acct_fetch": 1,
+  "fetched_at": "2026-02-03T10:00:00Z",
+  "bank": "other",
+  "account_uid": "00000000-0000-0000-0000-00000000000c",
+  "date_from": "2026-01-01",
+  "pages": [
+    {
+      "transactions": [
+        {"entry_reference": "C1", "status": "BOOK", "booking_date": "2026-01-05",
+         "transaction_amount": {"currency": "DKK", "amount": "40.00"}, "credit_debit_indicator": "DBIT",
+         "creditor": {"name": "Bakery"}},
+        {"entry_reference": "C2", "status": "BOOK", "booking_date": "2026-01-25",
+         "transaction_amount": {"currency": "DKK", "amount": "60.00"}, "credit_debit_indicator": "DBIT",
+         "exchange_rate": {"instructed_amount": {"currency": "EUR", "amount": "8.05"}},
+         "creditor": {"name": "Bakery"}}
+      ]
+    }
+  ],
+  "balances": {"balances": [
+    {"balance_type": "CLBD", "reference_date": "2026-02-02", "balance_amount": {"currency": "DKK", "amount": "400.00"}}
+  ]}
+}
