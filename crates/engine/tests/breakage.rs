@@ -295,10 +295,9 @@ fn the_first_days_order_follows_the_running_balance() {
     assert!(!build.findings.has_errors(), "{}", build.findings.render(true));
 }
 
-/// Amounts past what a Decimal holds, or schedules past year 9999, make the
-/// build panic instead of reporting what's wrong.
+/// Amounts past what a Decimal holds, or schedules past year 9999, used to
+/// make the build panic instead of reporting what's wrong.
 #[test]
-#[ignore = "bug: out-of-range amounts and dates panic"]
 fn out_of_range_inputs_are_reported_not_panics() {
     let config = &config(NORDEA);
     let csv = nordea_csv(&[("2026/01/05", "-50,00", "Groceries", "950,00")]);

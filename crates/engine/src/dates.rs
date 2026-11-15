@@ -62,7 +62,10 @@ pub fn add_months(date: Date, months: i32) -> Date {
     date.checked_add(months.months()).expect("date out of range")
 }
 
-/// A repeating interval like "1 month" or "2 weeks".
+const MAX_PERIOD_MONTHS: i32 = 100 * 12;
+const MAX_PERIOD_DAYS: i32 = 100 * 366;
+
+/// A repeating interval like "1 month" or "2 weeks", of at most 100 years.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Period {
     Days(i32),
@@ -79,13 +82,20 @@ impl Period {
         if n <= 0 {
             bail!("period must be positive: {s:?}");
         }
-        Ok(match unit.trim_end_matches('s') {
-            "day" => Period::Days(n),
-            "week" => Period::Days(7 * n),
-            "month" => Period::Months(n),
-            "year" => Period::Months(12 * n),
+        let period = match unit.trim_end_matches('s') {
+            "day" => Some(Period::Days(n)),
+            "week" => n.checked_mul(7).map(Period::Days),
+            "month" => Some(Period::Months(n)),
+            "year" => n.checked_mul(12).map(Period::Months),
             _ => bail!("invalid period unit in {s:?} (use days, weeks, months or years)"),
-        })
+        };
+        // Due dates are stepped through one period at a time, and dates end
+        // at year 9999: a century is far more than any schedule needs.
+        match period {
+            Some(p @ Period::Days(d)) if d <= MAX_PERIOD_DAYS => Ok(p),
+            Some(p @ Period::Months(m)) if m <= MAX_PERIOD_MONTHS => Ok(p),
+            _ => bail!("period {s:?} is too long (at most 100 years)"),
+        }
     }
 
     /// The `k`-th occurrence counted from `anchor` (k = 0 is the anchor itself).

@@ -162,7 +162,7 @@ They describe what *should* happen on a schedule, so a missing payment shows up.
   - Each due date up to `--as-of` books the price to the subscription's expense or income account.
   - The other side goes to `liabilities:payable:<name>` (or `assets:receivable:<name>`).
   - Payments (`subscription = "<name>"`) settle it, so the balance is 0 when all is paid.
-  - Fields: `every`, `first`, `end` (last due date, inclusive), `prices` (history), `grace` (7 days), `notice`, `opening`.
+  - Fields: `every` (at most 100 years), `first`, `end` (last due date, inclusive), `prices` (history), `grace` (7 days), `notice`, `opening`.
 - **Checks:**
   - Deficit: the oldest unpaid due date is more than the grace period old.
   - More than one period paid ahead: paid twice?

@@ -126,8 +126,13 @@ fn apply(
             applied.txs.push(tx);
         }
         Action::Split(parts) => {
-            let fixed: Decimal = parts.iter().filter_map(|p| p.amount).sum();
-            let rest = -t.amount - fixed;
+            let too_large = || anyhow::anyhow!("split amounts too large to add up");
+            let fixed = parts
+                .iter()
+                .filter_map(|p| p.amount)
+                .try_fold(Decimal::ZERO, |sum, a| sum.checked_add(a))
+                .ok_or_else(too_large)?;
+            let rest = (-t.amount).checked_sub(fixed).ok_or_else(too_large)?;
             if parts.iter().all(|p| p.amount.is_some()) && rest != Decimal::ZERO {
                 bail!(
                     "split amounts add up to {}, but must add up to {} (or add rest = true)",
