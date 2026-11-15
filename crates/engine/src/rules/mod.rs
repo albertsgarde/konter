@@ -213,6 +213,12 @@ fn valid_name(name: &str) -> bool {
         && !name.starts_with('-')
 }
 
+/// Tags konter writes on transactions itself. A rule's own tags can't use
+/// them, or a transaction could pass for a transfer or a subscription payment
+/// with whatever reads the tags.
+const BUILT_IN_TAGS: [&str; 9] =
+    ["bank-id", "rule", "purchased", "original", "transfer", "transfer-pair", "subscription", "pays", "source"];
+
 pub(crate) fn valid_tag(s: &str) -> bool {
     !s.is_empty() && !s.contains([',', ';', '\n', ' ', ':'])
 }
@@ -246,6 +252,9 @@ fn convert_output(raw: RawOutput) -> Result<Output> {
     for (k, v) in &raw.tags {
         if !valid_tag(k) || v.contains([',', ';', '\n']) {
             bail!("invalid tag {k:?} = {v:?} (no spaces, commas, colons or semicolons in names; no commas in values)");
+        }
+        if BUILT_IN_TAGS.contains(&k.as_str()) {
+            bail!("tag {k:?} is one konter writes itself; use another name");
         }
     }
     Ok(Output {
@@ -366,6 +375,9 @@ impl Rules {
             (|| -> Result<()> {
                 if !valid_name(&name) {
                     bail!("rule names use lowercase letters, digits and dashes");
+                }
+                if name == "pin" {
+                    bail!("a rule can't be named \"pin\": that's what pins are reported as");
                 }
                 let when: RawCondition =
                     table.remove("when").context("missing `when`")?.try_into().context("invalid `when`")?;

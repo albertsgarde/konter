@@ -344,6 +344,23 @@ prices = [{ from = 2026-01-01, amount = 1 }]
     assert!(panicked.is_empty(), "the build panicked on {panicked:?}");
 }
 
+/// A rule's own `tags` could use the names konter writes itself, so a rule
+/// could make a transaction look like a transfer or a subscription payment to
+/// whatever reads the tags; and a rule named `pin` was reported as a pin.
+#[test]
+fn rules_cant_pass_for_what_konter_writes_itself() {
+    let config = config(NORDEA);
+    let rule = |name: &str, tags: &str| {
+        format!("[[rule]]\nname = {name:?}\nwhen = {{ description = \"Rent\" }}\naccount = \"expenses:rent\"\n{tags}")
+    };
+    for tag in ["transfer", "subscription", "bank-id"] {
+        let text = rule("rent", &format!("tags = {{ {tag} = \"bank:b\" }}\n"));
+        assert!(Rules::load_str(&text, "config/rules.toml", &config).is_err(), "tag {tag} was accepted");
+    }
+    assert!(Rules::load_str(&rule("rent", "tags = { flat = \"home\" }\n"), "config/rules.toml", &config).is_ok());
+    assert!(Rules::load_str(&rule("pin", ""), "config/rules.toml", &config).is_err(), "a rule named pin was accepted");
+}
+
 // ── History the bank will forget ───────────────────────────────────────
 //
 // What a bank no longer has can't be had again ("history lost from Nordea
