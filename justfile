@@ -8,6 +8,8 @@ books := env("KONTER_BOOKS", "books")
 konter := env("KONTER", "cargo run --quiet --release --manifest-path " + quote(justfile_directory() / "Cargo.toml") + " --") + " --root " + quote(books)
 
 mod more
+# Recipes that are only for one person's books, if their books have a justfile: `just books <recipe>`.
+mod? books
 
 [private]
 default:
