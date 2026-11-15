@@ -23,7 +23,11 @@ use konter_repo::repo::Repo;
 use konter_report::site::{self, Page};
 
 #[derive(Parser)]
-#[command(name = "konter", about = "Turns raw bank data into hledger books using a rules file")]
+#[command(
+    name = "konter",
+    version = env!("KONTER_VERSION"),
+    about = "Turns raw bank data into hledger books using a rules file"
+)]
 struct Cli {
     /// Repository root (default: nearest parent directory with config/sources.toml).
     #[arg(long, global = true)]
