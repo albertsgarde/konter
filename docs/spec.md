@@ -84,7 +84,7 @@ A posting with both `amount` and `balance` asserts the balance. Hand-written tra
   - Deduplicate overlapping files; a disagreement between files is an error. Copies in the same format must agree on everything, booking date and amount included: rows told apart by the bank's reference alone would otherwise let a reference the bank used twice swallow a transaction.
   - Rows that look alike (same day, amount and running balance, say) are told apart by counting them oldest first within each file. Every export of a day starts at its beginning, while one taken during the day ends partway, so the n-th of a kind is the same row in each.
   - Report rows missing from a file that covers their date.
-  - Order rows so the running balance chains; a break is an error.
+  - Order rows so the running balance chains; a break is an error. A day with no balance before it (the first, or the one after a break) is put in an order that ends where the next day starts. Where rows could go either way, their order comes from the export with the most rows that day (positions in different files can't be compared), and rows that look alike keep the order they were counted in, so their IDs don't depend on which exports there are.
   - `cutover` picks CSV before a date and API data from it on. Not needed today: the two agree.
 - **IDs** (`<prefix>-<date>-<6 hex>`) must never change, because pins refer to them. They're hashed from:
   - booking date, amount and running balance, when there is one;

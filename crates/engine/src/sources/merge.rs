@@ -35,6 +35,16 @@ enum Key {
     Text(Date, Decimal, String, u32),
 }
 
+impl Key {
+    /// The place among rows that look alike (0 for a bank reference).
+    fn occurrence(&self) -> u32 {
+        match self {
+            Key::Balance(.., n) | Key::Text(.., n) => *n,
+            Key::BankRef(_) => 0,
+        }
+    }
+}
+
 /// Summary of one raw file after merging.
 #[derive(Clone, Debug)]
 pub struct FileSummary {
@@ -168,7 +178,16 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
     let mut by_ref: BTreeMap<String, Key> = BTreeMap::new();
     let mut per_file: Vec<(FileSummary, BTreeSet<Key>)> = Vec::new();
     let mut conflicts = Vec::new();
+    // Where in a file a row is (`order_hint`) can only be compared within that
+    // file. So a transaction takes its place from the file with the most rows
+    // on its day: every export of a day starts at its beginning, so that one
+    // has all of them. Here: how many rows that file has on the day.
+    let mut placed_by: BTreeMap<Key, usize> = BTreeMap::new();
     for file in files {
+        let mut on_day: BTreeMap<Date, usize> = BTreeMap::new();
+        for row in &file.rows {
+            *on_day.entry(row.booked).or_default() += 1;
+        }
         let mut occurrences: BTreeMap<Key, u32> = BTreeMap::new();
         let mut keys = BTreeSet::new();
         let summary = FileSummary {
@@ -205,8 +224,15 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
                 by_ref.entry(r.clone()).or_insert_with(|| key.clone());
             }
             keys.insert(key.clone());
+            let rows_on_day = on_day[&row.booked];
             match union.get_mut(&key) {
                 Some(existing) => {
+                    let place = if rows_on_day > placed_by[&key] {
+                        placed_by.insert(key.clone(), rows_on_day);
+                        row.order_hint
+                    } else {
+                        existing.order_hint
+                    };
                     let diffs = differences(existing, &row);
                     if !diffs.is_empty() && existing.origins.iter().any(|o| o.file == file.rel) {
                         conflicts.push(format!(
@@ -234,8 +260,10 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
                     } else {
                         existing.origins.extend(row.origins);
                     }
+                    existing.order_hint = place;
                 }
                 None => {
+                    placed_by.insert(key.clone(), rows_on_day);
                     union.insert(key, row);
                 }
             }
@@ -270,11 +298,12 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
     }
 
     // 3. Order.
-    let mut txs: Vec<BankTransaction> = union.into_values().collect();
+    let (occurrences, mut txs): (Vec<u32>, Vec<BankTransaction>) =
+        union.into_iter().map(|(key, t)| (key.occurrence(), t)).unzip();
     let has_running_balance = !txs.is_empty() && txs.iter().all(|t| t.balance_after.is_some());
     let mut chain_ok = true;
     if has_running_balance {
-        let (ordered, breaks) = chain(&txs);
+        let (ordered, breaks) = chain(&txs, &occurrences);
         txs = ordered.into_iter().map(|i| txs[i].clone()).collect();
         if !breaks.is_empty() {
             chain_ok = false;
@@ -331,21 +360,27 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
 }
 
 /// Orders transactions (all with running balances) so each one starts from the
-/// previous one's balance. Returns the order (indices) and descriptions of breaks.
-fn chain(txs: &[BankTransaction]) -> (Vec<usize>, Vec<String>) {
+/// previous one's balance. `occurrences`: each one's place among those that
+/// look alike, from merging. Returns the order (indices) and descriptions of breaks.
+fn chain(txs: &[BankTransaction], occurrences: &[u32]) -> (Vec<usize>, Vec<String>) {
     let mut days: BTreeMap<Date, Vec<usize>> = BTreeMap::new();
     for (i, t) in txs.iter().enumerate() {
         days.entry(t.booked).or_default().push(i);
     }
+    let mut days: Vec<(Date, Vec<usize>)> = days.into_iter().collect();
+    for (_, idxs) in &mut days {
+        idxs.sort_by_key(|&i| (txs[i].time, txs[i].order_hint));
+        alike_in_order(txs, occurrences, idxs);
+    }
     let mut order = Vec::with_capacity(txs.len());
     let mut breaks = Vec::new();
     let mut current: Option<(Date, Decimal)> = None;
-    for (day, mut idxs) in days {
-        idxs.sort_by_key(|&i| (txs[i].time, txs[i].order_hint));
-        let day_order = match current.and_then(|(_, b)| chain_day(txs, &idxs, Some(b))) {
+    for (k, (day, idxs)) in days.iter().enumerate() {
+        let (day, idxs) = (*day, idxs.clone());
+        let day_order = match current.and_then(|(_, b)| chain_day(txs, &idxs, Some(b), None)) {
             Some(o) => o,
             None => {
-                let own = chain_day(txs, &idxs, None);
+                let own = chain_day_unanchored(txs, &idxs, days.get(k + 1).map(|(_, next)| next.as_slice()));
                 match (&own, current) {
                     (Some(o), Some((prev_day, b))) => {
                         let starts = txs[o[0]].balance_before().unwrap();
@@ -369,20 +404,75 @@ fn chain(txs: &[BankTransaction]) -> (Vec<usize>, Vec<String>) {
     (order, breaks)
 }
 
+/// Puts a day's transactions that look alike (same amount and running
+/// balance) in the order they were counted in when merging, keeping the places
+/// they take among the others. The running balance can't tell them apart, so
+/// whichever is tried first goes first; and when their copies come from
+/// different files, their positions in those files can't be compared. Then
+/// adding an export could swap their IDs, and a pin would move from one to the
+/// other.
+fn alike_in_order(txs: &[BankTransaction], occurrences: &[u32], idxs: &mut [usize]) {
+    let mut groups: BTreeMap<(Decimal, Option<Decimal>), Vec<usize>> = BTreeMap::new();
+    for (place, &i) in idxs.iter().enumerate() {
+        groups.entry((txs[i].amount, txs[i].balance_after)).or_default().push(place);
+    }
+    for places in groups.values().filter(|p| p.len() > 1) {
+        let mut members: Vec<usize> = places.iter().map(|&p| idxs[p]).collect();
+        members.sort_by_key(|&i| occurrences[i]);
+        for (&place, i) in places.iter().zip(members) {
+            idxs[place] = i;
+        }
+    }
+}
+
+/// An order for a day with no balance before it to start from: the first day,
+/// or the one after a break. Several orders can chain (a charge and its refund,
+/// either way round), so if the first one found doesn't lead into the next day,
+/// prefer one that ends where the next day starts.
+fn chain_day_unanchored(txs: &[BankTransaction], idxs: &[usize], next: Option<&[usize]>) -> Option<Vec<usize>> {
+    let found = chain_day(txs, idxs, None, None)?;
+    let Some(next) = next else { return Some(found) };
+    let leads_on = |end: Decimal| chain_day(txs, next, Some(end), None).is_some();
+    if leads_on(txs[*found.last().unwrap()].balance_after.unwrap()) {
+        return Some(found);
+    }
+    let mut tried = Vec::new();
+    for &j in next {
+        let end = txs[j].balance_before().unwrap();
+        if tried.contains(&end) {
+            continue;
+        }
+        tried.push(end);
+        if let Some(o) = chain_day(txs, idxs, None, Some(end))
+            && leads_on(end)
+        {
+            return Some(o);
+        }
+    }
+    Some(found)
+}
+
 /// Finds an order of one day's transactions where each starts from the previous
-/// one's balance, starting from `start` (or from any transaction if `None`).
-/// Candidates are tried in the given order, so ties follow time and file order.
-fn chain_day(txs: &[BankTransaction], idxs: &[usize], start: Option<Decimal>) -> Option<Vec<usize>> {
+/// one's balance, starting from `start` (or from any transaction if `None`) and
+/// ending on `end`, if given. Candidates are tried in the given order, so ties
+/// follow time and file order.
+fn chain_day(
+    txs: &[BankTransaction],
+    idxs: &[usize],
+    start: Option<Decimal>,
+    end: Option<Decimal>,
+) -> Option<Vec<usize>> {
     fn dfs(
         txs: &[BankTransaction],
         idxs: &[usize],
         current: Decimal,
+        end: Option<Decimal>,
         used: &mut [bool],
         path: &mut Vec<usize>,
         budget: &mut u32,
     ) -> bool {
         if path.len() == idxs.len() {
-            return true;
+            return end.is_none_or(|e| e == current);
         }
         if *budget == 0 {
             return false;
@@ -392,7 +482,7 @@ fn chain_day(txs: &[BankTransaction], idxs: &[usize], start: Option<Decimal>) ->
             if !used[j] && txs[i].balance_before() == Some(current) {
                 used[j] = true;
                 path.push(i);
-                if dfs(txs, idxs, txs[i].balance_after.unwrap(), used, path, budget) {
+                if dfs(txs, idxs, txs[i].balance_after.unwrap(), end, used, path, budget) {
                     return true;
                 }
                 used[j] = false;
@@ -409,7 +499,7 @@ fn chain_day(txs: &[BankTransaction], idxs: &[usize], start: Option<Decimal>) ->
         let mut used = vec![false; idxs.len()];
         let mut path = Vec::new();
         let mut budget = 100_000;
-        if dfs(txs, idxs, b, &mut used, &mut path, &mut budget) {
+        if dfs(txs, idxs, b, end, &mut used, &mut path, &mut budget) {
             return Some(path);
         }
     }

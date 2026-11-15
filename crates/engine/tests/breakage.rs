@@ -276,12 +276,11 @@ fn a_mid_day_export_and_a_later_one_agree() {
 /// merge step orders them by running balance" (lunar_csv.rs). It can't on the
 /// first day, which has no balance before it to start from: if that day's
 /// rows add up to nothing (a charge and its refund), either order chains, and
-/// file order picks one without looking at the next day. The wrong one gives
-/// a wrong opening balance and errors about a missing transaction, an
+/// file order used to pick one without looking at the next day. The wrong one
+/// gives a wrong opening balance and errors about a missing transaction, an
 /// ignored one and a failed assertion. Two Nordea exports, one taken between
-/// the charge and the refund, do the same.
+/// the charge and the refund, did the same.
 #[test]
-#[ignore = "bug: the first day's order ignores the next day's starting balance"]
 fn the_first_days_order_follows_the_running_balance() {
     let config = config(
         "[books]\nstart = 2026-01-01\n\n[sources.\"lunar:b\"]\nbank = \"lunar\"\nnumber = \"555\"\n\
@@ -294,7 +293,6 @@ fn the_first_days_order_follows_the_running_balance() {
         04.01.2026,12.00,Refund,\"50,00\",\"1000,00\",r2\n";
     let files = [("lunar:b", "lunar/555/statement.csv", statement)];
     let build = build(&config, rules(&config, &[]), &[], &files, date(2026, 1, 10));
-    // Today: opening balance 950, and three errors.
     assert_eq!(build.loaded.sources["lunar:b"].opening, Some(Decimal::from(1000)));
     assert!(!build.findings.has_errors(), "{}", build.findings.render(true));
 }
