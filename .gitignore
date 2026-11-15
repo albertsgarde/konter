@@ -1,4 +1,6 @@
 /target
+/.direnv/
+/result
 /crates/konter/tests/fixtures/*/ledger/generated.journal
 /crates/konter/tests/fixtures/*/ledger/forecast.journal
 

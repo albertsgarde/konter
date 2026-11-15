@@ -40,7 +40,8 @@ We probably wanna use Enable Banking for getting the data if they support Nordea
 The tool and the books are two repos. This one is the tool; the books (bank data, config, rules and the generated ledger) are a private repo of their own in `books/`, which this repo ignores.
 
 1. Clone this repo, and clone your books into `books/` inside it (or set `KONTER_BOOKS` to wherever they are).
-2. Run `just setup` once. It puts in place the guards that keep `books/` out of this repo's history: `.git/info/exclude`, jj's `snapshot.auto-track`, and a git pre-commit hook. The recipes refuse to run until it has.
-3. `just` lists the daily recipes and `just more` the rest. They run the tool's working copy on the books.
+2. With Nix, `nix develop` (or direnv, through `.envrc`) brings the Rust toolchain, hledger, `just` and `cargo-insta`. Without it, install those yourself: Rust 1.85 or newer, and hledger for `konter verify`.
+3. Run `just setup` once. It puts in place the guards that keep `books/` out of this repo's history: `.git/info/exclude`, jj's `snapshot.auto-track`, and a git pre-commit hook. The recipes refuse to run until it has.
+4. `just` lists the daily recipes and `just more` the rest. They run the tool's working copy on the books.
 
 [docs/fetching.md](docs/fetching.md) says how to get bank data, [docs/usage.md](docs/usage.md) how to use the tool, and [docs/rules.md](docs/rules.md) how to write rules.
