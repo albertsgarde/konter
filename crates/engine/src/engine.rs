@@ -149,7 +149,9 @@ fn apply(
             }
             let mut tx = base();
             let target_start = config.source_start(target_source);
-            if target_source.imported() && t.booked < target_start {
+            // An account that isn't imported only has a start that matters
+            // when it says where transfers before then go.
+            if t.booked < target_start && (target_source.imported() || target_source.before_start.is_some()) {
                 // The other account wasn't part of the books yet.
                 let Some(account) = &target_source.before_start else {
                     bail!(

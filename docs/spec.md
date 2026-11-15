@@ -48,7 +48,7 @@ Finally `books` writes everything in `ledger/`: those two and `main.journal`, hl
   - `ledger`: the hledger account it books to.
   - `id_prefix`, `formats`.
   - `unmatched`: error, warn or allow (see §5).
-  - `start` / `before_start`: an account that wasn't yours before `start` (say, a friend's account that you took over on 2026-09-16). Transfers to or from it before then go to `before_start` (e.g. `assets:receivable:sam`).
+  - `start` / `before_start`: an account that wasn't yours before `start` (say, a friend's account that you took over on 2026-09-16). Transfers to or from it before then go to `before_start` (e.g. `assets:receivable:sam`), whether it's imported or not. An imported account with a `start` needs `before_start` if there are any; for one that isn't imported, transfers without it go to its own account.
   - `cutover`: for mixing CSV and API data.
   - `set_aside`: read only by the report.
 - `[banks.<name>]`: Enable Banking settings and `history_days` (540 for Nordea).

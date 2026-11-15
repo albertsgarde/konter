@@ -150,11 +150,10 @@ prices = [{ from = 2026-01-01, amount = 99 }]
 }
 
 /// `before_start` says where transfers to an account go before its `start`
-/// (docs/spec.md §3). It's only looked at when the account is imported; for
-/// one without data the setting is accepted and silently ignored, and the
-/// money is booked as if the account had been yours all along.
+/// (docs/spec.md §3). It was only looked at when the account is imported; for
+/// one without data the setting was accepted and silently ignored, and the
+/// money booked as if the account had been yours all along.
 #[test]
-#[ignore = "bug: before_start is ignored for an account that isn't imported"]
 fn transfers_before_an_accounts_start_go_to_before_start_even_without_its_data() {
     let text = format!(
         "{NORDEA}\n[sources.\"bank:savings\"]\nbank = \"nordea\"\nledger = \"assets:bank:savings\"\n\
@@ -174,7 +173,6 @@ fn transfers_before_an_accounts_start_go_to_before_start_even_without_its_data()
     );
     let tx = build.books.iter().find(|tx| tx.date == date(2026, 1, 5)).unwrap();
     let accounts: Vec<&str> = tx.postings.iter().map(|p| p.account.as_str()).collect();
-    // Today: ["assets:bank:a", "assets:bank:savings"].
     assert_eq!(accounts, ["assets:bank:a", "assets:receivable:friend"]);
 }
 
