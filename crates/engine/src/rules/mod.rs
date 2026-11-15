@@ -329,8 +329,7 @@ fn is_pin_id(id: &str) -> bool {
     // <prefix>-YYYY-MM-DD-xxxxxx
     let parts: Vec<&str> = id.split('-').collect();
     parts.len() == 5
-        && !parts[0].is_empty()
-        && parts[0].chars().all(|c| c.is_ascii_lowercase())
+        && crate::config::valid_id_prefix(parts[0])
         && parts[4].len() == 6
         && parts[4].chars().all(|c| c.is_ascii_hexdigit())
         && format!("{}-{}-{}", parts[1], parts[2], parts[3]).parse::<jiff::civil::Date>().is_ok()

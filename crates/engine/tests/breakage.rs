@@ -18,10 +18,9 @@ use rust_decimal::Decimal;
 
 /// `konter unmatched` prints `[pin."<id>"]` for every unmatched transaction,
 /// but pins (and later marks) only take IDs whose prefix is lowercase letters,
-/// while sources.toml takes any `id_prefix`. A second account named `n2`, or
-/// one called `nordea-main`, can never have a transaction pinned.
+/// while sources.toml used to take any `id_prefix`. A second account named
+/// `n2`, or one called `nordea-main`, could never have a transaction pinned.
 #[test]
-#[ignore = "bug: sources.toml takes any id_prefix, but pins only take lowercase letters"]
 fn every_id_konter_assigns_can_be_pinned() {
     for prefix in ["n2", "nordea-main"] {
         let text = NORDEA.replace("id_prefix = \"ba\"", &format!("id_prefix = {prefix:?}"));

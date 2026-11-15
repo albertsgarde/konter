@@ -139,6 +139,12 @@ impl Config {
                 let Some(prefix) = &s.id_prefix else {
                     bail!("source {name:?} is imported, so it needs an id_prefix");
                 };
+                if !valid_id_prefix(prefix) {
+                    bail!(
+                        "source {name:?}: id_prefix {prefix:?} must be lowercase letters (a-z), or its \
+                         transactions' IDs couldn't be pinned"
+                    );
+                }
                 if s.number.is_none() {
                     bail!("source {name:?} is imported, so it needs a number (its data directory)");
                 }
@@ -180,4 +186,10 @@ impl Config {
             .find(|(_, s)| s.imported() && Config::data_dir(s).as_deref() == Some(dir))
             .map(|(name, _)| name.as_str())
     }
+}
+
+/// Whether `prefix` can start a transaction ID: lowercase ASCII letters, as
+/// pins and later marks expect (`<prefix>-<date>-<hash>`, split on `-`).
+pub fn valid_id_prefix(prefix: &str) -> bool {
+    !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_lowercase())
 }
