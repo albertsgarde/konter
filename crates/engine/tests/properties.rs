@@ -146,7 +146,6 @@ fn pairs_are_opposite_legs_within_the_window() {
 /// "An unpaired side is an error inside both accounts' covered dates": so
 /// every leg that can be paired must be.
 #[test]
-#[ignore = "bug: pairing is greedy (see breakage.rs)"]
 fn pairing_pairs_as_many_legs_as_can_be_paired() {
     for window in [0, 1, 2, 5] {
         small_cases(4, 7, |legs| {

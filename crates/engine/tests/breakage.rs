@@ -38,11 +38,10 @@ fn every_id_konter_assigns_can_be_pinned() {
     }
 }
 
-/// Transfer legs are paired greedily, closest first, so one leg can take the
-/// only partner another leg has. Both legs are then reported as an error,
-/// although every leg has a partner within the window.
+/// Transfer legs are paired closest first. Done greedily, one leg can take the
+/// only partner another leg has, and both were reported as an error, although
+/// every leg has a partner within the window.
 #[test]
-#[ignore = "bug: greedy pairing leaves legs unpaired that a full pairing would pair"]
 fn transfers_pair_whenever_every_leg_has_a_partner() {
     let leg = |from: &str, to: &str, day: i8, amount: i64, id: &str| Leg {
         ledger_idx: 0,
@@ -64,7 +63,7 @@ fn transfers_pair_whenever_every_leg_has_a_partner() {
     let (pairs, unpaired) = pair(&legs, 5);
     let pairs: Vec<(&str, &str)> = pairs.iter().map(|&(i, j)| (legs[i].id.as_str(), legs[j].id.as_str())).collect();
     let unpaired: Vec<&str> = unpaired.iter().map(|&i| legs[i].id.as_str()).collect();
-    // Today: the arrival on the 12th is paired with the money sent on the
+    // Greedily, the arrival on the 12th is paired with the money sent on the
     // 13th, after it arrived, and the other two are an "unpaired transfer" error.
     assert!(unpaired.is_empty(), "paired {pairs:?}, left unpaired {unpaired:?}");
 }

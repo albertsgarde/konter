@@ -132,7 +132,7 @@ Data quirks worth knowing:
 
 ## 6. Transfers between your own accounts
 
-- **Both accounts have data:** `transfer = "<source>"` books each side against `assets:transfers`, and the two sides are paired. They pair when the amounts are opposite and the dates are at most `transfer_window_days` apart, closest first, and get `transfer-pair` tags. An unpaired side is an error inside both accounts' covered dates, and a warning at the edges.
+- **Both accounts have data:** `transfer = "<source>"` books each side against `assets:transfers`, and the two sides are paired. They pair when the amounts are opposite and the dates are at most `transfer_window_days` apart, closest first, and get `transfer-pair` tags. A side that closest-first leaves without a partner still gets one if others can move to their next closest to free one, so as many sides as possible are paired. An unpaired side is an error inside both accounts' covered dates, and a warning at the edges.
 - **The other account has no data:** the side is booked straight to that account's ledger account.
 - **A labelled transfer stays a plain transfer.** A transfer like "To Spending: Lisbon trip" doesn't carry the expense. The purchases it paid for, in the spending account, are mapped to the trip. Booking the expense on the transfer would count it twice once those purchases are mapped.
 - A typical layout: spending accounts topped up from a main account, an account holding money committed to charity until it's given away (`set_aside`, §10), and savings.
