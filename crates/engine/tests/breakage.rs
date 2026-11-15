@@ -1,6 +1,6 @@
 //! Ways to make konter misbehave through its normal inputs (config, rules and
 //! bank files as text), each the smallest case found. Each test asserts what
-//! docs/spec.md says should happen, and fails today, so they're ignored until
+//! docs/spec.md says should happen. Those that still fail are ignored until
 //! fixed: `cargo test -p konter-engine --test breakage -- --ignored`.
 
 mod common;
@@ -84,12 +84,11 @@ unmatched = "allow"
 
 /// Without running balances, rows are told apart by the bank's reference
 /// alone: two rows with the same `entry_reference` are taken to be one, even
-/// within one file and with different dates and amounts (`amount` and the
-/// date aren't among the fields compared). The second purchase disappears,
-/// and the opening balance, worked back from the bank's reported balance,
-/// quietly absorbs it, so every check passes.
+/// within one file and with different dates and amounts. When the amount and
+/// date weren't compared, the second purchase disappeared, and the opening
+/// balance, worked back from the bank's reported balance, quietly absorbed
+/// it, so every check passed.
 #[test]
-#[ignore = "bug: a repeated bank reference makes a transaction disappear silently"]
 fn a_reference_the_bank_repeats_doesnt_swallow_a_transaction() {
     let config = config(ENABLE_BANKING);
     let fetched = r#"{
@@ -112,8 +111,8 @@ fn a_reference_the_bank_repeats_doesnt_swallow_a_transaction() {
     let build = build(&config, rules(&config, &[]), &[], &files, date(2026, 2, 5));
     let data = &build.loaded.sources["other:c"];
     let kept: Vec<String> = data.txs.iter().map(|t| format!("{} {}", t.booked, t.amount)).collect();
-    // Today: only the 40.00 is kept, the opening balance is 440 instead of
-    // 500, and the build reports no errors.
+    // Without an error, only the 40.00 would be kept, and the opening balance
+    // would be 440 instead of 500.
     assert!(
         data.txs.len() == 2 || build.findings.has_errors(),
         "kept {kept:?}, opening balance {:?}, and no error:\n{}",
@@ -359,8 +358,8 @@ prices = [{ from = 2026-01-01, amount = 1 }]
 //
 // What a bank no longer has can't be had again ("history lost from Nordea
 // can't be fetched again", docs/spec.md §4), so this is the one loss that's
-// permanent. The build warns before it happens, but only about where each
-// imported source's data *ends*.
+// permanent. The build warns before it happens, and once only did so about
+// where each imported source's data *ends*.
 
 /// The non-Ok findings that mention `what`, as text.
 fn findings_about(build: &Build, what: &str) -> Vec<String> {
@@ -375,8 +374,8 @@ fn findings_about(build: &Build, what: &str) -> Vec<String> {
 }
 
 /// An account at a bank with `history_days` that isn't imported yet (no
-/// `formats`) gets no warning at all, however much of its history the bank
-/// has already forgotten.
+/// `formats`) once got no warning at all, however much of its history the
+/// bank had already forgotten.
 #[test]
 fn history_of_an_account_not_imported_yet_is_warned_about_before_its_gone() {
     let text = format!(
@@ -393,14 +392,13 @@ fn history_of_an_account_not_imported_yet_is_warned_about_before_its_gone() {
     assert!(as_of < lost);
     let build = build(&config, rules(&config, &[]), &[], &[("bank:a", &rel, &csv)], as_of);
     let about = findings_about(&build, "bank:savings");
-    // Today: nothing at all.
     assert!(about.iter().any(|f| f.contains(&lost.to_string())), "nothing says {lost} for bank:savings: {about:?}");
 }
 
 /// An imported source whose data starts after the books do (the first fetch
-/// didn't reach back that far, say) is only warned about where its data
-/// ends. The deadline given is later than the day the missing beginning
-/// starts to go, and the one remark about the beginning says to move `start`,
+/// didn't reach back that far, say) was once only warned about where its data
+/// ends. The deadline given was later than the day the missing beginning
+/// starts to go, and the one remark about the beginning said to move `start`,
 /// which hides the hole rather than filling it.
 #[test]
 fn history_missing_from_the_start_is_warned_about_before_its_gone() {
@@ -415,6 +413,5 @@ fn history_missing_from_the_start_is_warned_about_before_its_gone() {
     assert!(as_of < lost);
     let build = build(&config, rules(&config, &[]), &[], &[("bank:a", &rel, &csv)], as_of);
     let about = findings_about(&build, "bank:a");
-    // Today: "export bank:a again … before 2027-07-25" and "set `start`".
     assert!(about.iter().any(|f| f.contains(&lost.to_string())), "nothing says {lost} for bank:a: {about:#?}");
 }

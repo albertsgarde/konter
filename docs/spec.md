@@ -81,7 +81,7 @@ A posting with both `amount` and `balance` asserts the balance. Hand-written tra
   - The counterparty name comes from the creditor or debtor.
   - The purchase date is kept (`purchased:` tag), but **booking date** is the transaction date throughout.
 - **Merging per source:**
-  - Deduplicate overlapping files; a disagreement between files is an error.
+  - Deduplicate overlapping files; a disagreement between files is an error. Copies in the same format must agree on everything, booking date and amount included: rows told apart by the bank's reference alone would otherwise let a reference the bank used twice swallow a transaction.
   - Report rows missing from a file that covers their date.
   - Order rows so the running balance chains; a break is an error.
   - `cutover` picks CSV before a date and API data from it on. Not needed today: the two agree.

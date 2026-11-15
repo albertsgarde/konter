@@ -111,6 +111,10 @@ fn differences(a: &BankTransaction, b: &BankTransaction) -> Vec<String> {
             }
         };
     }
+    // Part of the key, except for a bank reference: a bank that used one
+    // reference twice would otherwise lose a transaction without a word.
+    cmp!(booked);
+    cmp!(amount);
     cmp!(description);
     cmp!(currency);
     cmp!(counterparty);
@@ -198,7 +202,16 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
             match union.get_mut(&key) {
                 Some(existing) => {
                     let diffs = differences(existing, &row);
-                    if !diffs.is_empty() {
+                    if !diffs.is_empty() && existing.origins.iter().any(|o| o.file == file.rel) {
+                        conflicts.push(format!(
+                            "{}: {} uses its bank reference {} again for {}: {}",
+                            short(existing),
+                            file.rel,
+                            row.bank_ref.as_deref().unwrap_or("?"),
+                            short(&row),
+                            diffs.join("; ")
+                        ));
+                    } else if !diffs.is_empty() {
                         conflicts.push(format!(
                             "{}: {} vs {}: {}",
                             short(existing),
