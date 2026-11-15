@@ -1,0 +1,9 @@
+# Every account the rules and config/transactions.toml use, so that a typo in
+# a rule fails the build. A comment after an account says what it's for.
+# Accounts konter makes up itself (fallbacks, transfers, subscriptions,
+# opening balances) don't need to be here.
+accounts = [
+    # "assets:bank:main",
+    # "expenses:food:groceries",
+    # "income:salary",
+]

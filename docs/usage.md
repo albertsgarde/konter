@@ -2,6 +2,10 @@
 
 What the tool does and why is in [spec.md](spec.md), and getting bank data in [fetching.md](fetching.md). This page covers day-to-day use. `just --list` shows every recipe. Paths are relative to your books (`books/`).
 
+## New books
+
+`konter init <dir>` makes new, empty books that build as they are, and makes the folder a git repo first (with jj, run `jj git init --colocate` in it afterwards). `config/sources.toml` has a commented example of a bank account to start from. It never replaces anything: it refuses a folder that already has `config/` or `data/`, and keeps a README or `.gitignore` that's already there. `just setup` runs it when there are no books yet.
+
 ## The loop
 
 1. **Get new data:** `just fetch` gets Nordea and Lunar through Enable Banking (after `just more konter link <bank>`) and then rebuilds, so step 2 is done too. CSV exports are the backup, and the only way for Nordea savings accounts: `just more konter add-export <file> [--source …]`.

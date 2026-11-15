@@ -17,6 +17,7 @@ use konter_engine::sources::{self, nordea_csv};
 use konter_engine::subscriptions::Flow;
 use konter_repo::books;
 use konter_repo::fetch;
+use konter_repo::init;
 use konter_repo::load;
 use konter_repo::manifest::{self, Manifest};
 use konter_repo::repo::Repo;
@@ -38,6 +39,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Make new, empty books in a directory, and make it a git repo.
+    Init {
+        /// Where the books go (made if it's missing). --root doesn't apply.
+        dir: PathBuf,
+    },
     /// Rebuild ledger/generated.journal and report what needs attention.
     Build {
         /// The date the books are built for (default: today).
@@ -178,6 +184,10 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
+    // The one command that doesn't work on existing books.
+    if let Command::Init { dir } = &cli.command {
+        return init(dir);
+    }
     let repo = Repo::discover(cli.root.as_deref().unwrap_or(Path::new(".")))?;
     let config = load::config(&repo)?;
     match cli.command {
@@ -406,6 +416,7 @@ fn run() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Fetch { source, from } => fetch_all(&repo, &config, source, from),
+        Command::Init { .. } => unreachable!("init is handled before the books are found"),
     }
 }
 
@@ -643,6 +654,26 @@ fn consent_warnings(config: &Config, findings: &mut Findings) {
             );
         }
     }
+}
+
+fn init(dir: &Path) -> Result<ExitCode> {
+    let start = jiff::Zoned::now().date().first_of_month();
+    let (git, written) = init::init(dir, start)?;
+    println!("Made new books in {}/, starting {start}:", dir.display());
+    for rel in written {
+        println!("  {rel}");
+    }
+    match git {
+        init::Git::Initialized => println!("It's a new git repo (with jj: `jj git init --colocate` in it)."),
+        init::Git::Existing => println!("It was a git repo already."),
+        init::Git::Failed(why) => println!("It isn't a git repo yet ({why}): make it one before adding bank data."),
+    }
+    println!(
+        "\nThe books are private: keep them in a private repo. Next, add your bank accounts to\n\
+         config/sources.toml (the examples there show how), get bank data in (konter's\n\
+         docs/fetching.md), and `konter build`."
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 fn link(config: &Config, bank: &str, days: u64) -> Result<ExitCode> {

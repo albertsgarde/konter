@@ -1,0 +1,26 @@
+# What the books cover and which bank accounts feed them. konter's
+# docs/spec.md (§3) describes every field, and docs/fetching.md how to get
+# bank data in.
+
+[books]
+# The first day the books cover: bank data before it is left out, and each
+# account's balance on this day becomes its opening balance.
+start = @START@
+# currency = "DKK"
+
+# One [sources."<bank>:<account>"] per bank account you own. For example, a
+# Nordea account fetched through Enable Banking, with CSV exports as the backup:
+#
+# [sources."nordea:main"]
+# bank = "nordea"
+# number = "1234567890"            # its raw data goes in data/nordea/1234567890/
+# ledger = "assets:bank:main"      # the account it's booked to; declare it in accounts.toml
+# id_prefix = "nm"                 # transaction IDs look like nm-2026-01-31-7f3a9c
+# formats = ["enable-banking", "nordea-csv"]
+#
+# How Enable Banking knows the bank (`konter banks` lists the names), and how
+# far back the bank lets you download:
+#
+# [banks.nordea]
+# enable_banking = { aspsp = "Nordea", country = "DK" }
+# history_days = 540
