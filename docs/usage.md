@@ -23,7 +23,7 @@ The recipes run the tool's working copy, so a change to the tool shows up in the
 
 - `just pin [rev]` moves the pin to a commit of the tool: by default the last one (`@-`), or `main` for GitHub's newest. A commit that isn't on GitHub yet gives a local pin, which works only on this machine; run `just pin <commit>` again once it's pushed, and it becomes a GitHub pin with an identical build.
 - Move the pin when the books start to depend on something new in the tool, and commit `pin/` with that change. Before moving it, build with the new tool and check that `jj diff ledger/` is empty, unless the change was meant to alter the books.
-- `just more check` fails if the pin is local, or if the pinned tool doesn't build the journals as they are, which catches rules that use something new without moving the pin.
+- `just more check` fails if the pinned tool doesn't build the journals as they are, which catches rules that use something new without moving the pin. A local pin is fine while you work; `just more check --push`, for before pushing the books, also fails on one, since the pushed books need a pin that works on any machine.
 - `pin/` is a flake of its own rather than one at the books' root because Nix copies a flake's whole git repo into its store, which every user on the machine can read. As a `path:` flake, only `pin/` is copied.
 
 ## Reports

@@ -20,10 +20,11 @@ build *args: _check-setup
 report: _check-setup
     {{konter}} report
 
-# konter verify runs `hledger check --strict`. The pinned konter has to be on
-# GitHub, so the pin works on any machine.
+# konter verify runs `hledger check --strict`. With --push, the pinned konter
+# has to be on GitHub too, so the pin works on any machine: use it before
+# pushing the books.
 [doc("Everything consistent: the journals are up to date and sound, with the working copy and with the pin.")]
-check: _check-setup && _check-pin
+check *flags: _check-setup && (_check-pin flags)
     {{konter}} verify
 
 test:
@@ -83,18 +84,24 @@ ui *args: _check-setup
 web *args: _check-setup
     hledger-web -f {{journal}} "$@"
 
-# The pin is what the books promise to build with, so it has to work on any
-# machine, and it has to build the journals as they are. That catches rules
-# that use something new in the tool without moving the pin.
-_check-pin:
+# The pin is what the books promise to build with, so it has to build the
+# journals as they are. That catches rules that use something new in the tool
+# without moving the pin. A local pin is fine while working; the books' pushed
+# history needs one that works on any machine, hence --push.
+_check-pin flags="":
     #!/usr/bin/env bash
     set -euo pipefail
+    case "$1" in
+        "") push=false ;;
+        --push) push=true ;;
+        *) echo "check takes only --push, not $1" >&2; exit 1 ;;
+    esac
     pin="$(realpath {{quote(books)}})/pin"
     if [ ! -f "$pin/flake.lock" ]; then
         echo "{{books}}/pin/ has no pin, so the books build with whatever konter runs them (\`just pin\` pins one)."
         exit 0
     fi
-    if jq -e '.nodes.konter.locked.type != "github"' "$pin/flake.lock" > /dev/null; then
+    if $push && jq -e '.nodes.konter.locked.type != "github"' "$pin/flake.lock" > /dev/null; then
         echo "{{books}}/pin/ pins a konter that isn't on GitHub: push it, then \`just pin $(jq -r .nodes.konter.locked.rev "$pin/flake.lock")\`." >&2
         exit 1
     fi
