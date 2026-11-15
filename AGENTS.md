@@ -14,6 +14,7 @@ books/      the books: config/, data/, ledger/
 - **jj acts on the nearest repo.** From this directory, use `jj -R books …` for the books and plain `jj` for the tool, rather than relying on the shell's current directory. With `-R`, paths are still relative to the current directory: `jj -R books diff books/ledger`, not `ledger`.
 - **The recipes run on `books/`** (or `$KONTER_BOOKS`) with the tool's working copy: `just more build`, `just more konter <subcommand>`. A bare `cargo run -- <subcommand>` from here finds no books; add `--root books`.
 - A change to the tool shows up in the books on the next run. Commit the tool change here and the books' change in `books/`, each with its own message.
+- **The books are pinned to a tool commit** in `books/pin/`. `just pinned <recipe>` runs with that tool, and `just pin` moves the pin ([docs/usage.md](docs/usage.md)). When the books start to need a tool change, move the pin and commit `books/pin/` with the books' change.
 - Plans and design history live with the books too, if they have any (mine: `books/PLAN.md` and `books/docs/plans/`).
 
 ## Version control

@@ -2,12 +2,11 @@
 
 set positional-arguments
 
-# hledger version the books are checked with (major.minor).
-hledger_version := "1.51"
 # The books: their own repo, in books/ unless KONTER_BOOKS says otherwise.
 books := env("KONTER_BOOKS", "books")
 journal := books / "ledger/main.journal"
-konter := "cargo run --quiet --release -- --root " + quote(books)
+# The tool's working copy, unless KONTER says otherwise (`just pinned` does).
+konter := env("KONTER", "cargo run --quiet --release --manifest-path " + quote(justfile_directory() / "Cargo.toml") + " --") + " --root " + quote(books)
 
 [private]
 default:
@@ -21,9 +20,10 @@ build *args: _check-setup
 report: _check-setup
     {{konter}} report
 
-# Everything consistent: committed journal up to date, and hledger agrees the
-# books are sound (konter verify runs `hledger check --strict`).
-check: _hledger-version _check-setup
+# konter verify runs `hledger check --strict`. The pinned konter has to be on
+# GitHub, so the pin works on any machine.
+[doc("Everything consistent: the journals are up to date and sound, with the working copy and with the pin.")]
+check: _check-setup && _check-pin
     {{konter}} verify
 
 test:
@@ -83,9 +83,23 @@ ui *args: _check-setup
 web *args: _check-setup
     hledger-web -f {{journal}} "$@"
 
-_hledger-version:
-    @hledger --version | grep -q '^hledger {{hledger_version}}\.' \
-      || (echo "expected hledger {{hledger_version}}.x, found: $(hledger --version)" >&2; exit 1)
+# The pin is what the books promise to build with, so it has to work on any
+# machine, and it has to build the journals as they are. That catches rules
+# that use something new in the tool without moving the pin.
+_check-pin:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pin="$(realpath {{quote(books)}})/pin"
+    if [ ! -f "$pin/flake.lock" ]; then
+        echo "{{books}}/pin/ has no pin, so the books build with whatever konter runs them (\`just pin\` pins one)."
+        exit 0
+    fi
+    if jq -e '.nodes.konter.locked.type != "github"' "$pin/flake.lock" > /dev/null; then
+        echo "{{books}}/pin/ pins a konter that isn't on GitHub: push it, then \`just pin $(jq -r .nodes.konter.locked.rev "$pin/flake.lock")\`." >&2
+        exit 1
+    fi
+    echo "With the pinned konter ($(jq -r .nodes.konter.locked.rev "$pin/flake.lock")):"
+    nix develop "path:$pin" --no-update-lock-file -c konter --root {{quote(books)}} verify
 
 _check-setup:
     @scripts/check-setup
