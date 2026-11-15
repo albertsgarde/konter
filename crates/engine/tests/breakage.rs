@@ -179,12 +179,11 @@ fn transfers_before_an_accounts_start_go_to_before_start_even_without_its_data()
 }
 
 /// A variable subscription settles one due date per payment, so "refunds go
-/// straight to the expense account" (docs/spec.md §8). Nothing checks that. A
-/// rule that matches the company's name also matches its yearly settlement
-/// refund, which then settles a due date as a negative bill and pushes every
-/// later payment one period on, with no warning.
+/// straight to the expense account" (docs/spec.md §8). Nothing used to check
+/// that. A rule that matches the company's name also matches its yearly
+/// settlement refund, which then settles a due date as a negative bill and
+/// pushes every later payment one period on.
 #[test]
-#[ignore = "bug: a refund mapped to a variable subscription silently shifts its bills"]
 fn a_refund_paid_to_a_variable_subscription_isnt_taken_for_a_bill() {
     let config = config(NORDEA);
     let subscription = r#"
@@ -225,8 +224,8 @@ subscription = "power"
                 && (d.message.contains("power") || d.details.iter().any(|l| l.contains("power")))
         })
     };
-    // Today: 700 (500 + 500 - 300; the March bill counts as April's), and no
-    // warning. Either the books say 1200 or the build says something.
+    // Mapped like this, the books say 700 (500 + 500 - 300; the March bill
+    // counts as April's). Either the books say 1200 or the build says so.
     assert!(
         spent == Decimal::from(1200) || mentioned(&build),
         "electricity up to {as_of} is booked as {spent}, not 1200, without a word:\n{}",

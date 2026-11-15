@@ -169,7 +169,7 @@ They describe what *should* happen on a schedule, so a missing payment shows up.
 - **`variable = true`** (electricity, prices in foreign currency):
   - Prices are estimates.
   - Each payment settles one due date, oldest first, and that due date books what was paid. An unpaid one books the estimate.
-  - So refunds go straight to the expense account, and `opening` isn't allowed.
+  - So refunds go straight to the expense account, and `opening` isn't allowed. A refund mapped to the subscription is a warning: it would settle a due date as a negative bill and move every later payment a period on.
 - **Transfer subscriptions** (`from`/`to` sources, e.g. monthly donations):
   - They expect money to move between your own accounts, so due dates book nothing.
   - The transfers are counted against what was due and tagged `pays:<name>`. Any amount at any time is fine.

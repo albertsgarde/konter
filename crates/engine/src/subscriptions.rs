@@ -392,6 +392,24 @@ fn check(config: &Config, s: &Subscription, as_of: Date, g: &Generated, findings
         }
         (_, Some(balance_account)) => {
             let payments = s.payments(&balance_account, &g.txs, as_of);
+            if s.variable {
+                // Each payment settles a due date, so a refund mapped here
+                // would settle one as a negative bill and move every later
+                // payment on a period (§8: refunds go to the account itself).
+                for (date, refund) in payments.iter().filter(|p| p.1 < Decimal::ZERO) {
+                    findings.warn(
+                        "subscription",
+                        format!(
+                            "{}: {} on {date} is a refund, which settles a due date like a payment and moves the \
+                             later ones; map it straight to {} ({})",
+                            s.name,
+                            fmt_num(-refund),
+                            s.account().unwrap_or("its account"),
+                            s.file
+                        ),
+                    );
+                }
+            }
             (payments.iter().map(|p| p.1).sum(), s.settled(config.start(), &payments))
         }
         (_, None) => unreachable!("only transfers have no balance account"),
