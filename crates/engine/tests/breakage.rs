@@ -378,7 +378,6 @@ fn findings_about(build: &Build, what: &str) -> Vec<String> {
 /// `formats`) gets no warning at all, however much of its history the bank
 /// has already forgotten.
 #[test]
-#[ignore = "bug: an account that isn't imported yet gets no warning before its history is gone"]
 fn history_of_an_account_not_imported_yet_is_warned_about_before_its_gone() {
     let text = format!(
         "{NORDEA}\n[banks.nordea]\nhistory_days = 540\n\n\
@@ -404,7 +403,6 @@ fn history_of_an_account_not_imported_yet_is_warned_about_before_its_gone() {
 /// starts to go, and the one remark about the beginning says to move `start`,
 /// which hides the hole rather than filling it.
 #[test]
-#[ignore = "bug: the history deadline counts from where the data ends, not from the start it lacks"]
 fn history_missing_from_the_start_is_warned_about_before_its_gone() {
     let text = NORDEA.replace("start = 2026-01-01", "start = 2025-12-01") + "\n[banks.nordea]\nhistory_days = 540\n";
     let config = config(&text);

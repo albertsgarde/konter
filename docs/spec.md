@@ -94,6 +94,7 @@ A posting with both `amount` and `balance` asserts the balance. Hand-written tra
 - **Freshness warnings:**
   - Fetched data older than 35 days, or exported data older than 90.
   - A year before the bank's history window passes the last download: the books can go a year without being looked at, and history lost from Nordea can't be fetched again.
+  - Likewise a year before it passes history that was never downloaded: from a source's start to where its data begins (when that's more than a week and the opening balance isn't zero), or all of it for a source without data, imported or not. The way out, besides downloading, is a later `start`. A beginning the bank has already forgotten is left to the opening balance remark.
 
 Data quirks worth knowing:
 - From November 2025, Nordea card payments through Enable Banking have a bare reference number as description; the merchant is only in the counterparty name. Rules match both (`when.any = [{ description_re = … }, { counterparty_name_re = … }]`).
