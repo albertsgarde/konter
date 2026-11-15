@@ -55,8 +55,9 @@ Finally `books` writes everything in `ledger/`: those two and `main.journal`, hl
 
 **`data/`**
 - Raw files are never edited. `data/MANIFEST` records their hashes, and a mismatch is an error.
+- Raw files are only ever added, never overwritten, and a path is recorded once: `add-export` refuses a file that has changed since it was added (even when given that file itself) and a name already taken by other content. `fetch` and `add-export` lock `data/` while they add to it, so several can run at once, and the manifest is replaced in one step, so it's never seen half-written.
 - Any number of overlapping files is fine; merging sorts them out (§4).
-- A `.balance.toml` sidecar (from `add-export --balance`) gives a balance assertion for exports without a running balance.
+- A `.balance.toml` sidecar (from `add-export --balance`) gives a balance assertion for exports without a running balance. Like a raw file it's recorded once: a different balance for the same export is refused.
 - `data/reference/transactions.csv` is an old categorized export. It's only a hint for `suggest` and `gaps`, never an input to the books.
 
 **Rules:** every `*.toml` under `config/rules/`. Files are split by source (`nordea/spending.toml`), and big groups by topic (`spending-trips.toml`, `spending-shared.toml`). Split by topic, not by date: pins that only make sense together (a payment and its repayment) must stay in one file. `config/rules/README.md` says what goes where.

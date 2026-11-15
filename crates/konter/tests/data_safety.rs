@@ -1,8 +1,7 @@
 //! What the commands that write data/ do to what's already there, run as the
 //! `konter` binary on a copy of tests/fixtures/basic. data/ is never edited
-//! and data/MANIFEST catches it if it is (docs/spec.md §1, §3); these find
-//! ways the commands themselves get around that. They fail today, so they're
-//! ignored until fixed: `cargo test -p konter --test data_safety -- --ignored`.
+//! and data/MANIFEST catches it if it is (docs/spec.md §1, §3); these are ways
+//! the commands themselves once got around that.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -41,16 +40,14 @@ const LUNAR: &str = "\u{feff}Date,Time,Title,Amount,Balance,Transaction ID\n\
     29.01.2026,09.00,Overførsel,\"500,00\",\"520,00\",00000000-0000-0000-0000-000000000002\n\
     10.01.2026,12.00,Coffee Shop,\"-30,00\",\"20,00\",00000000-0000-0000-0000-000000000001\n";
 
-/// data/MANIFEST is updated by reading it, adding a line and writing it back
-/// (truncate, then write), with no lock. Two `konter fetch` or `add-export`
-/// runs at once, as with several agents in one working copy, lose each
-/// other's lines; one that reads the file while another has just truncated it
-/// writes back only its own line, wiping the record of every other raw file.
-/// The build then says to `konter add-export` each of them, which records
-/// whatever they hold by then. Racy by nature, but this one loses lines on
-/// nearly every run.
+/// data/MANIFEST is updated by reading it, adding a line and writing it back.
+/// Without a lock, two `konter fetch` or `add-export` runs at once, as with
+/// several agents in one working copy, lose each other's lines; and one that
+/// reads the file while another has emptied it to write it writes back only
+/// its own line, wiping the record of every other raw file. The build then
+/// says to `konter add-export` each of them, which records whatever they hold
+/// by then. Without the lock, this lost lines on nearly every run.
 #[test]
-#[ignore = "bug: concurrent writers can wipe data/MANIFEST"]
 fn concurrent_add_exports_keep_every_manifest_line() {
     let root = scratch("manifest-race");
     let before = manifest(&root);
@@ -79,18 +76,16 @@ fn concurrent_add_exports_keep_every_manifest_line() {
     let after = manifest(&root);
     let lost: Vec<&str> = before.lines().filter(|line| !after.contains(line)).collect();
     let missing: Vec<&String> = names.iter().filter(|name| !after.contains(&format!("lunar/555/{name}"))).collect();
-    // Today: typically one line is left of the 18.
     assert!(lost.is_empty() && missing.is_empty(), "lost {lost:?} and never recorded {missing:?}; now:\n{after}");
 }
 
-/// `add-export` refuses a file whose name is taken by different content, but
-/// not when it's given the raw file where it lies: then it says "already in
-/// place" and records the file's hash as it is now. A raw file changed by
+/// `add-export` refuses a file whose name is taken by different content. It
+/// once didn't when given the raw file where it lies: it said "already in
+/// place" and recorded the file's hash as it was then. A raw file changed by
 /// accident (here an editor dropped the newest row, which leaves the running
-/// balance unbroken) is accepted, and the transaction is gone from the books
+/// balance unbroken) was accepted, and the transaction was gone from the books
 /// without an error.
 #[test]
-#[ignore = "bug: add-export on a raw file where it lies records whatever it holds now"]
 fn add_export_doesnt_accept_a_changed_raw_file() {
     let root = scratch("in-place");
     let path = root.join("data/nordea/1234567890/Konto 1234567890 - 2026-01-31 10.00.00.csv");
@@ -103,19 +98,17 @@ fn add_export_doesnt_accept_a_changed_raw_file() {
     assert!(text(&build).contains("content changed since it was added"), "{}", text(&build));
 
     let run = konter(&root).arg("add-export").arg(&path).output().unwrap();
-    // Refusing is fine; recording the changed file isn't. Today it prints
-    // "is already in place" and the next build's manifest check passes.
+    // Refusing is fine; recording the changed file isn't.
     assert_eq!(manifest(&root), before, "add-export said:\n{}", text(&run));
 }
 
 /// The balance given to `add-export --balance` is what the bank showed when
 /// the export was taken: it can't be looked up again later, and for an
 /// account without running balances the opening balance is worked back from
-/// it. Running the command again with another balance overwrites the
-/// recorded one, and records the new one in data/MANIFEST, so nothing
-/// notices.
+/// it. Running the command again with another balance once overwrote the
+/// recorded one, and recorded the new one in data/MANIFEST, so nothing
+/// noticed.
 #[test]
-#[ignore = "bug: add-export --balance overwrites a recorded balance"]
 fn add_export_doesnt_overwrite_a_recorded_balance() {
     let root = scratch("sidecar");
     let path = root.join("data/lunar/555/statement.csv");

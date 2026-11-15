@@ -18,7 +18,7 @@ use konter_engine::subscriptions::Flow;
 use konter_repo::books;
 use konter_repo::fetch;
 use konter_repo::load;
-use konter_repo::manifest::Manifest;
+use konter_repo::manifest::{self, Manifest};
 use konter_repo::repo::Repo;
 use konter_report::site::{self, Page};
 
@@ -559,36 +559,64 @@ fn add_export(
     }
     let dir = Config::data_dir(src).context("source has no data directory")?;
     let rel = format!("{dir}/{}", name.unwrap_or(file_name));
-    let target = repo.data().join(&rel);
     let bytes = std::fs::read(file)?;
-    if target.exists() {
-        let same_file = target.canonicalize()? == file.canonicalize()?;
-        if !same_file && std::fs::read(&target)? != bytes {
-            bail!("data/{rel} already exists with different content; use --name");
-        }
-        println!("data/{rel} is already in place");
-    } else {
-        std::fs::create_dir_all(target.parent().unwrap())?;
-        std::fs::copy(file, &target)?;
-        println!("copied to data/{rel}");
-    }
-    let mut manifest = Manifest::load(&repo.manifest())?;
-    manifest.entries.insert(rel.clone(), sha256_hex(&bytes));
-    if let Some((date, balance)) = snapshot {
-        let sidecar = format!("{rel}{}", sources::SIDECAR);
+    let sidecar = snapshot.map(|(date, balance)| {
         let text =
             format!("# Balance shown by the bank at export time.\ndate = {date}\nbalance = \"{}\"\n", fmt_num(balance));
-        std::fs::write(repo.data().join(&sidecar), &text)?;
+        (format!("{rel}{}", sources::SIDECAR), text)
+    });
+    let lock = manifest::lock(repo)?;
+    let mut manifest = Manifest::load(&repo.manifest())?;
+    // Everything is checked before anything is written.
+    let in_place = manifest.check_add(&repo.data(), &rel, &bytes, "use --name")?;
+    let sidecar_in_place = match &sidecar {
+        Some((sidecar, text)) => manifest.check_add(
+            &repo.data(),
+            sidecar,
+            text.as_bytes(),
+            "a balance is only recorded once (if that one is wrong, delete the file and its line in data/MANIFEST, \
+             then run this again)",
+        )?,
+        None => false,
+    };
+    if in_place {
+        println!("data/{rel} is already in place");
+    } else {
+        add_raw_file(repo, &rel, &bytes)?;
+        println!("copied to data/{rel}");
+    }
+    manifest.entries.insert(rel.clone(), sha256_hex(&bytes));
+    if let Some((sidecar, text)) = &sidecar {
+        if sidecar_in_place {
+            println!("data/{sidecar} is already in place");
+        } else {
+            add_raw_file(repo, sidecar, text.as_bytes())?;
+            println!("wrote data/{sidecar}");
+        }
         manifest.entries.insert(sidecar.clone(), sha256_hex(text.as_bytes()));
-        println!("wrote data/{sidecar}");
     }
     manifest.save(&repo.manifest())?;
+    drop(lock);
     println!("recorded in data/MANIFEST\n");
 
     let mut findings = Findings::default();
     load::source(repo, config, &source_name, &mut findings)?;
     print!("{}", findings.render(false));
     Ok(exit_code(&findings, false))
+}
+
+/// Writes a new raw file to data/. Raw files are never overwritten, so one
+/// that's already there is an error.
+fn add_raw_file(repo: &Repo, rel: &str, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let path = repo.data().join(rel);
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .with_context(|| format!("adding data/{rel}"))?;
+    file.write_all(bytes).with_context(|| format!("writing data/{rel}"))
 }
 
 /// Warns about Enable Banking consents that end within two weeks. Reads the
@@ -770,13 +798,13 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<ji
         }
         println!("  {} new transactions", new + unreferenced);
         let rel = format!("{dir}/eb-{}.json", now.strftime("%Y-%m-%dT%H-%M-%S"));
-        let path = repo.data().join(&rel);
-        std::fs::create_dir_all(path.parent().unwrap())?;
         let text = fetch::to_raw_json(&fetch::strip_nulls(doc));
-        std::fs::write(&path, &text)?;
+        let lock = manifest::lock(repo)?;
         let mut manifest = Manifest::load(&repo.manifest())?;
+        add_raw_file(repo, &rel, text.as_bytes())?;
         manifest.entries.insert(rel.clone(), sha256_hex(text.as_bytes()));
         manifest.save(&repo.manifest())?;
+        drop(lock);
         println!("  wrote data/{rel}");
         load::source(repo, config, name, &mut findings)?;
         fetched_any = true;
