@@ -159,7 +159,7 @@ Data quirks worth knowing:
 They describe what *should* happen on a schedule, so a missing payment shows up.
 
 - **Booking:**
-  - Each due date up to `--as-of` books the price to the subscription's expense or income account.
+  - Each due date up to `--as-of` books the price to the subscription's expense or income account. Due dates on the same day, and the forecast, come in subscription name order, whatever files they're in.
   - The other side goes to `liabilities:payable:<name>` (or `assets:receivable:<name>`).
   - Payments (`subscription = "<name>"`) settle it, so the balance is 0 when all is paid.
   - Fields: `every` (at most 100 years), `first`, `end` (last due date, inclusive), `prices` (history), `grace` (7 days), `notice`, `opening`.

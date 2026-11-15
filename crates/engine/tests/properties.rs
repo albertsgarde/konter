@@ -402,7 +402,6 @@ fn pattern_rules_and_a_subscription_dont_depend_on_order() {
 }
 
 #[test]
-#[ignore = "bug: subscriptions due the same day are written in file order (see breakage.rs)"]
 fn subscriptions_due_the_same_day_dont_depend_on_order() {
     let snippets: Vec<&str> = RULES.iter().chain(&SAME_DAY).copied().collect();
     if let Some(report) = check_rule_order(&snippets) {

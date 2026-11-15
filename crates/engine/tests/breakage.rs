@@ -119,12 +119,11 @@ fn a_reference_the_bank_repeats_doesnt_swallow_a_transaction() {
     );
 }
 
-/// Subscriptions due on the same day are written in the order they're loaded,
-/// which is the order of the files they're in. Moving one to another file
-/// rewrites the journals, although "the order of rules and the files they're
-/// in never matter" (docs/spec.md §1).
+/// Subscriptions due on the same day were written in the order they're
+/// loaded, which is the order of the files they're in. Moving one to another
+/// file rewrote the journals, although "the order of rules and the files
+/// they're in never matter" (docs/spec.md §1).
 #[test]
-#[ignore = "bug: subscriptions due the same day are written in file order"]
 fn which_file_a_subscription_is_in_doesnt_change_the_journals() {
     let config = config("[books]\nstart = 2026-01-01\n");
     let music = r#"

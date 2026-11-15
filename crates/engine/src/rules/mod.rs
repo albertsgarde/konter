@@ -361,6 +361,10 @@ impl Rules {
         for (file, text) in files {
             rules.parse(text, file).with_context(|| format!("in {file}"))?;
         }
+        // Subscriptions due the same day are written in this order, and the
+        // forecast lists them in it: neither may depend on the files they're
+        // in (docs/spec.md §1).
+        rules.subscriptions.sort_by(|a, b| a.name.cmp(&b.name));
         rules.validate(config)?;
         Ok(rules)
     }

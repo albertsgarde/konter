@@ -2,13 +2,13 @@
 
 use std::path::Path;
 
+use jiff::civil::date;
 use konter_engine::config::Config;
 use konter_engine::engine::{self, Status};
 use konter_engine::findings::Findings;
 use konter_engine::rules::Rules;
 use konter_repo::repo::Repo;
 use konter_repo::{books, load};
-use jiff::civil::date;
 
 fn fixture(name: &str) -> (Repo, Config) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);
@@ -351,6 +351,11 @@ fn subscriptions_with(
     Ok((config, rules, generated, states, findings))
 }
 
+/// The state of the subscription called `name`.
+fn state<'a>(states: &'a [konter_engine::subscriptions::State], name: &str) -> &'a konter_engine::subscriptions::State {
+    states.iter().find(|s| s.name == name).unwrap()
+}
+
 #[test]
 fn transfer_subscriptions_are_paid_by_transfers_of_any_size() {
     // The fixture moves 500 to lunar:b on 2026-01-28 and 1000 to bank:savings
@@ -424,8 +429,8 @@ prices = [{ from = 2026-01-01, amount = 300 }]
 "#;
     let (_, _, _, states, findings) = subscriptions_with(subs, date(2026, 2, 25)).unwrap();
     // Due 300 + 300, paid 500: the 2026-02-15 one is 100 short.
-    assert_eq!(states.last().unwrap().credit, rust_decimal::Decimal::from(-100));
-    assert_eq!(states.last().unwrap().paid_until, Some(date(2026, 1, 15)));
+    assert_eq!(state(&states, "pocket-money").credit, rust_decimal::Decimal::from(-100));
+    assert_eq!(state(&states, "pocket-money").paid_until, Some(date(2026, 1, 15)));
     let text = findings.render(true);
     assert!(text.contains("pocket-money: 100.00 DKK owed, unpaid since 2026-02-15"), "{text}");
 
@@ -474,23 +479,23 @@ subscription = "power"
     // paid. The second payment came before its due date.
     let (_, _, generated, states, findings) = subscriptions_with(subs, date(2026, 2, 15)).unwrap();
     assert_eq!(due(&generated), [(date(2026, 1, 1), n(50)), (date(2026, 2, 1), n(25))]);
-    assert_eq!(states.last().unwrap().credit, n(0));
-    assert_eq!(states.last().unwrap().paid_until, Some(date(2026, 2, 1)));
-    assert_eq!(states.last().unwrap().price, n(40));
+    assert_eq!(state(&states, "power").credit, n(0));
+    assert_eq!(state(&states, "power").paid_until, Some(date(2026, 2, 1)));
+    assert_eq!(state(&states, "power").price, n(40));
     assert!(!findings.render(true).contains("power"), "{}", findings.render(true));
 
     // Paid one due date ahead: neither owed nor a warning.
     let (_, _, generated, states, findings) = subscriptions_with(subs, date(2026, 1, 25)).unwrap();
     assert_eq!(due(&generated), [(date(2026, 1, 1), n(50))]);
-    assert_eq!(states.last().unwrap().credit, n(25));
-    assert_eq!(states.last().unwrap().paid_until, Some(date(2026, 2, 1)));
+    assert_eq!(state(&states, "power").credit, n(25));
+    assert_eq!(state(&states, "power").paid_until, Some(date(2026, 2, 1)));
     assert!(!findings.render(true).contains("power"), "{}", findings.render(true));
 
     // A due date nobody has paid books the estimate and is owed.
     let (_, _, generated, states, findings) = subscriptions_with(subs, date(2026, 3, 15)).unwrap();
     assert_eq!(due(&generated).last(), Some(&(date(2026, 3, 1), n(40))));
-    assert_eq!(states.last().unwrap().credit, n(-40));
-    assert_eq!(states.last().unwrap().oldest_unpaid, Some(date(2026, 3, 1)));
+    assert_eq!(state(&states, "power").credit, n(-40));
+    assert_eq!(state(&states, "power").oldest_unpaid, Some(date(2026, 3, 1)));
     let text = findings.render(true);
     assert!(text.contains("power: 40.00 DKK owed, unpaid since 2026-03-01"), "{text}");
 
