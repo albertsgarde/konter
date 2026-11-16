@@ -5,6 +5,8 @@
 //! `$KONTER_CONFIG_DIR`):
 //! - `enable-banking.toml`: application ID, private key path, redirect URL
 //! - `sessions.toml`: one session per linked bank (written by `konter link`)
+//! - `pending-links.toml`: links begun with `konter link --start`, until
+//!   `--finish` completes them
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -96,6 +98,50 @@ impl Sessions {
 
     pub fn save(&self) -> Result<()> {
         let path = Sessions::path()?;
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(&path, toml::to_string_pretty(self)?)?;
+        restrict_permissions(&path);
+        Ok(())
+    }
+}
+
+/// `pending-links.toml`: links started with `konter link --start` and not yet
+/// finished, bank name → the state the redirect has to carry back.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct PendingLinks {
+    #[serde(default)]
+    pub banks: BTreeMap<String, PendingLink>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PendingLink {
+    pub state: String,
+    /// RFC 3339; the consent asked for.
+    pub valid_until: String,
+}
+
+impl PendingLinks {
+    fn path() -> Result<PathBuf> {
+        Ok(config_dir()?.join("pending-links.toml"))
+    }
+
+    pub fn load() -> Result<PendingLinks> {
+        let path = PendingLinks::path()?;
+        if !path.exists() {
+            return Ok(PendingLinks::default());
+        }
+        let text = std::fs::read_to_string(&path)?;
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = PendingLinks::path()?;
+        if self.banks.is_empty() {
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+            }
+            return Ok(());
+        }
         std::fs::create_dir_all(path.parent().unwrap())?;
         std::fs::write(&path, toml::to_string_pretty(self)?)?;
         restrict_permissions(&path);

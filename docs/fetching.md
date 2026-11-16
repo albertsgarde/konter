@@ -43,6 +43,15 @@ just more konter link lunar
 
 Each prints a URL. Open it, log in with MitID, then paste the URL you land on back into the terminal. The session is stored in `~/.config/konter/sessions.toml`, and the command lists which linked accounts match which sources. `konter build` warns two weeks before a consent expires.
 
+Without a terminal to paste into (on a server, say), linking takes two steps:
+
+```sh
+just more konter link nordea --start                      # prints only the URL
+just more konter link nordea --finish '<the URL you land on>'
+```
+
+`--start` keeps what the redirect has to match in `~/.config/konter/pending-links.toml` until `--finish` uses it. The URL you land on holds a single-use code that, until it's used, links your accounts: send it only over an encrypted channel.
+
 ### Fetching
 
 ```sh

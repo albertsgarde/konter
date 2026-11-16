@@ -130,12 +130,22 @@ enum Command {
         country: String,
     },
     /// Link a bank through Enable Banking (opens a consent valid for up to 180 days).
+    ///
+    /// Asks for the redirect URL in the terminal, or, without a terminal (over
+    /// chat, say), in two steps: --start prints the URL to log in at, and
+    /// --finish takes the URL the bank redirected to.
     Link {
         /// Bank name as in [banks.<name>] in config/sources.toml, e.g. nordea.
         bank: String,
         /// Requested consent length in days (capped by the bank's maximum).
         #[arg(long, default_value_t = 180)]
         days: u64,
+        /// Only print the URL to log in at; finish with --finish.
+        #[arg(long, conflicts_with = "finish")]
+        start: bool,
+        /// Finish a link begun with --start, with the URL the bank redirected to.
+        #[arg(long, value_name = "REDIRECT_URL")]
+        finish: Option<String>,
     },
     /// Show what Enable Banking reports about a linked bank's session.
     Session { bank: String },
@@ -392,7 +402,41 @@ fn run() -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Link { bank, days } => link(&config, &bank, days),
+        Command::Link { bank, days, start, finish } => match (start, finish) {
+            (false, None) => {
+                let (url, pending) = start_link(&config, &bank, days)?;
+                let redirect = fetch::Settings::load()?.redirect_url;
+                println!("1. Open this URL and log in with MitID:\n\n   {url}\n");
+                println!("2. You'll end up on {redirect} (the page may fail to load; that's fine).");
+                println!("   Paste the full URL from the address bar here and press Enter:");
+                let mut pasted = String::new();
+                std::io::stdin().read_line(&mut pasted)?;
+                finish_link(&config, &bank, &pasted, &pending)
+            }
+            (true, _) => {
+                let (url, pending) = start_link(&config, &bank, days)?;
+                let mut links = fetch::PendingLinks::load()?;
+                links.banks.insert(bank.clone(), pending);
+                links.save()?;
+                println!("{url}");
+                eprintln!("Log in there, then run `konter link {bank} --finish '<the URL you end up on>'`.");
+                Ok(ExitCode::SUCCESS)
+            }
+            (false, Some(redirect)) => {
+                let mut links = fetch::PendingLinks::load()?;
+                let pending = links
+                    .banks
+                    .get(&bank)
+                    .cloned()
+                    .with_context(|| format!("no link to {bank} begun: run `konter link {bank} --start` first"))?;
+                let code = finish_link(&config, &bank, &redirect, &pending)?;
+                // The code in the redirect is single-use, so the pending
+                // link is spent whether or not it worked.
+                links.banks.remove(&bank);
+                links.save()?;
+                Ok(code)
+            }
+        },
         Command::Session { bank } => {
             let sessions = fetch::Sessions::load()?;
             let session = sessions.banks.get(&bank).with_context(|| format!("{bank} isn't linked"))?;
@@ -676,7 +720,9 @@ fn init(dir: &Path) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn link(config: &Config, bank: &str, days: u64) -> Result<ExitCode> {
+/// Begins linking a bank: the URL to log in at, and what the redirect has to
+/// carry back for `finish_link`.
+fn start_link(config: &Config, bank: &str, days: u64) -> Result<(String, fetch::PendingLink)> {
     let eb = config
         .banks
         .get(bank)
@@ -696,12 +742,15 @@ fn link(config: &Config, bank: &str, days: u64) -> Result<ExitCode> {
     let valid_until = fetch::rfc3339(now + (days * 86_400).min(max_secs));
     let state = sha256_hex(format!("{now}-{}", std::process::id()).as_bytes())[..16].to_string();
     let url = client.start_auth(&eb.aspsp, &eb.country, &valid_until, &state, &settings.redirect_url)?;
-    println!("1. Open this URL and log in with MitID:\n\n   {url}\n");
-    println!("2. You'll end up on {} (the page may fail to load; that's fine).", settings.redirect_url);
-    println!("   Paste the full URL from the address bar here and press Enter:");
-    let mut pasted = String::new();
-    std::io::stdin().read_line(&mut pasted)?;
-    let code = fetch::parse_redirect(&pasted, &state)?;
+    Ok((url, fetch::PendingLink { state, valid_until }))
+}
+
+/// Finishes linking a bank from the URL the bank redirected to (or just its
+/// code), and stores the session.
+fn finish_link(config: &Config, bank: &str, redirect: &str, pending: &fetch::PendingLink) -> Result<ExitCode> {
+    let client = fetch::Client::new(&fetch::Settings::load()?)?;
+    let code = fetch::parse_redirect(redirect, &pending.state)?;
+    let valid_until = &pending.valid_until;
     let session = client.create_session(&code)?;
     let accounts: Vec<fetch::SessionAccount> = session
         .get("accounts")
@@ -721,7 +770,7 @@ fn link(config: &Config, bank: &str, days: u64) -> Result<ExitCode> {
             .get("access")
             .and_then(|a| a.get("valid_until"))
             .and_then(|v| v.as_str())
-            .unwrap_or(&valid_until)
+            .unwrap_or(valid_until)
             .to_string(),
         accounts: accounts.clone(),
     };
