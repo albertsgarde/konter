@@ -249,8 +249,18 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
     for s in config.sources.values() {
         g.tool_accounts.insert(s.ledger.clone());
     }
+    opening_balances(config, loaded, &mut g, findings);
+    let mapped = apply_rules(config, rules, loaded, &mut g, findings);
+    balance_snapshots(config, loaded, &mut g, findings);
+    pair_transfers(config, loaded, &mapped.legs, &mut g, findings);
+    report_outcomes(config, loaded, &g, mapped.ambiguous, mapped.invalid, findings);
+    report_dead_rules(config, rules, &g, &mapped.matched_rules, findings);
+    report_stale_later(rules, &g, findings);
+    g
+}
 
-    // Opening balances.
+/// Books each source's opening balance at its start.
+fn opening_balances(config: &Config, loaded: &Loaded, g: &mut Generated, findings: &mut Findings) {
     for (name, data) in &loaded.sources {
         let source = &config.sources[name];
         let (Some(opening), Some(first)) = (data.opening, data.first()) else { continue };
@@ -280,88 +290,38 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
         });
         g.tool_accounts.insert(OPENING.into());
     }
+}
 
-    // Apply rules.
-    let mut legs = Vec::new();
-    let mut matched_rules: BTreeSet<&str> = BTreeSet::new();
-    let mut invalid = Vec::new();
-    let mut ambiguous = Vec::new();
+/// What applying the rules leaves for the steps after it.
+#[derive(Default)]
+struct Mapped<'a> {
+    /// The sides of transfers between imported sources, still to be paired.
+    legs: Vec<Leg>,
+    /// The pattern rules that matched a transaction, by name.
+    matched_rules: BTreeSet<&'a str>,
+    /// A line for each transaction whose rule didn't fit it.
+    invalid: Vec<String>,
+    /// A line for each transaction that several rules of equal priority match.
+    ambiguous: Vec<String>,
+}
+
+/// Books every bank transaction, by its rule or pin or to the fallback
+/// account, and records what became of it.
+fn apply_rules<'a>(
+    config: &Config,
+    rules: &'a Rules,
+    loaded: &Loaded,
+    g: &mut Generated,
+    findings: &mut Findings,
+) -> Mapped<'a> {
+    let mut mapped = Mapped::default();
     for (name, data) in &loaded.sources {
+        let ledger = &config.sources[name].ledger;
         let mut books_balance = data.opening;
         for (seq, t) in data.txs.iter().enumerate() {
-            let mut candidates: Vec<(&str, i64, &Output)> = rules
-                .patterns
-                .iter()
-                .filter(|r| r.when.matches(t))
-                .map(|r| (r.name.as_str(), r.priority, &r.output))
-                .collect();
-            candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
-            matched_rules.extend(candidates.iter().map(|c| c.0));
-            let chosen: Result<(String, &Output), Status> = if let Some(pin) = rules.pins.get(&t.id) {
-                Ok(("pin".into(), &pin.output))
-            } else if candidates.is_empty() {
-                Err(Status::Unmatched)
-            } else if candidates.len() > 1 && candidates[0].1 == candidates[1].1 {
-                let top = candidates[0].1;
-                Err(Status::Ambiguous(candidates.iter().filter(|c| c.1 == top).map(|c| c.0.to_string()).collect()))
-            } else {
-                Ok((candidates[0].0.to_string(), candidates[0].2))
-            };
-            let mut outcome = Outcome {
-                status: Status::Unmatched,
-                candidates: candidates.iter().map(|c| (c.0.to_string(), c.1)).collect(),
-                ledger: Vec::new(),
-                unknown: None,
-                ignored: None,
-            };
-            let produced: Vec<LedgerTransaction> = match chosen {
-                Ok((label, output)) => match apply(config, rules, t, seq, &label, output) {
-                    Ok(applied) => {
-                        outcome.status = if label == "pin" { Status::Pin } else { Status::Rule(label.clone()) };
-                        if let Some(to) = applied.transfer_to {
-                            legs.push(Leg {
-                                ledger_idx: g.txs.len(),
-                                from: name.clone(),
-                                to,
-                                date: t.booked,
-                                amount: t.amount,
-                                id: t.id.clone(),
-                            });
-                        }
-                        outcome.unknown = applied.unknown;
-                        outcome.ignored = applied.ignored;
-                        applied.txs
-                    }
-                    Err(e) => {
-                        invalid.push(format!("{}: {label}: {e}", line(t)));
-                        outcome.status = Status::Invalid { rule: label.clone(), error: e.to_string() };
-                        vec![fallback(config, t, seq, "invalid", &format!("rule {label} failed: {e}"))]
-                    }
-                },
-                Err(status) => {
-                    if let Status::Ambiguous(names) = &status {
-                        ambiguous.push(format!("{}: {}", line(t), names.join(", ")));
-                    }
-                    // Only a plain unmatched transaction can wait: an
-                    // ambiguous one is an error in the rules either way.
-                    let later = rules.later.get(&t.id).filter(|_| status == Status::Unmatched);
-                    let comment = match later {
-                        None => "not mapped yet".to_string(),
-                        Some(l) => match &l.note {
-                            None => "not mapped yet, marked later".to_string(),
-                            Some(note) => format!("not mapped yet, marked later: {note}"),
-                        },
-                    };
-                    outcome.status = match later {
-                        Some(l) => Status::Later(l.note.clone()),
-                        None => status,
-                    };
-                    vec![fallback(config, t, seq, "unmatched", &comment)]
-                }
-            };
+            let (mut outcome, produced) = map(config, rules, t, seq, g.txs.len(), &mut mapped);
             // The books' bank balance must follow the bank's running balance
             // wherever a bank posting (with its balance assertion) is written.
-            let ledger = &config.sources[name].ledger;
             let bank_postings: Vec<Decimal> = produced
                 .iter()
                 .flat_map(|tx| &tx.postings)
@@ -369,24 +329,20 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
                 .map(|p| p.amount)
                 .collect();
             books_balance = books_balance.map(|b| b + bank_postings.iter().sum::<Decimal>());
-            let mut check = |at: &BankTransaction, books: &mut Option<Decimal>| {
-                if let (Some(b), Some(bank)) = (*books, at.balance_after)
-                    && b != bank
-                {
-                    findings.error(
-                        "ignore",
-                        format!(
-                            "{name}: at {} the books say {} but the bank says {}; ignored transactions must cancel out",
-                            at.id,
-                            fmt_num(b),
-                            fmt_num(bank)
-                        ),
-                    );
-                    *books = Some(bank);
-                }
-            };
-            if !bank_postings.is_empty() || seq + 1 == data.txs.len() {
-                check(t, &mut books_balance);
+            if (!bank_postings.is_empty() || seq + 1 == data.txs.len())
+                && let (Some(books), Some(bank)) = (books_balance, t.balance_after)
+                && books != bank
+            {
+                findings.error(
+                    "ignore",
+                    format!(
+                        "{name}: at {} the books say {} but the bank says {}; ignored transactions must cancel out",
+                        t.id,
+                        fmt_num(books),
+                        fmt_num(bank)
+                    ),
+                );
+                books_balance = Some(bank);
             }
             for tx in produced {
                 for p in &tx.postings {
@@ -404,8 +360,93 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
             g.outcomes.insert(t.id.clone(), outcome);
         }
     }
+    mapped
+}
 
-    // Balance snapshots stand in for running balances where there are none.
+/// Maps one bank transaction: finds its pin or rule and applies it, or books
+/// it to the fallback account. Returns its outcome and the ledger transactions
+/// it makes, which the caller adds to the books and to the outcome; `next` is
+/// the index the first of them gets.
+fn map<'a>(
+    config: &Config,
+    rules: &'a Rules,
+    t: &BankTransaction,
+    seq: usize,
+    next: usize,
+    mapped: &mut Mapped<'a>,
+) -> (Outcome, Vec<LedgerTransaction>) {
+    let mut candidates: Vec<(&str, i64, &Output)> =
+        rules.patterns.iter().filter(|r| r.when.matches(t)).map(|r| (r.name.as_str(), r.priority, &r.output)).collect();
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
+    mapped.matched_rules.extend(candidates.iter().map(|c| c.0));
+    let chosen: Result<(String, &Output), Status> = if let Some(pin) = rules.pins.get(&t.id) {
+        Ok(("pin".into(), &pin.output))
+    } else if candidates.is_empty() {
+        Err(Status::Unmatched)
+    } else if candidates.len() > 1 && candidates[0].1 == candidates[1].1 {
+        let top = candidates[0].1;
+        Err(Status::Ambiguous(candidates.iter().filter(|c| c.1 == top).map(|c| c.0.to_string()).collect()))
+    } else {
+        Ok((candidates[0].0.to_string(), candidates[0].2))
+    };
+    let mut outcome = Outcome {
+        status: Status::Unmatched,
+        candidates: candidates.iter().map(|c| (c.0.to_string(), c.1)).collect(),
+        ledger: Vec::new(),
+        unknown: None,
+        ignored: None,
+    };
+    let produced = match chosen {
+        Ok((label, output)) => match apply(config, rules, t, seq, &label, output) {
+            Ok(applied) => {
+                outcome.status = if label == "pin" { Status::Pin } else { Status::Rule(label.clone()) };
+                if let Some(to) = applied.transfer_to {
+                    mapped.legs.push(Leg {
+                        ledger_idx: next,
+                        from: t.source.clone(),
+                        to,
+                        date: t.booked,
+                        amount: t.amount,
+                        id: t.id.clone(),
+                    });
+                }
+                outcome.unknown = applied.unknown;
+                outcome.ignored = applied.ignored;
+                applied.txs
+            }
+            Err(e) => {
+                mapped.invalid.push(format!("{}: {label}: {e}", line(t)));
+                outcome.status = Status::Invalid { rule: label.clone(), error: e.to_string() };
+                vec![fallback(config, t, seq, "invalid", &format!("rule {label} failed: {e}"))]
+            }
+        },
+        Err(status) => {
+            if let Status::Ambiguous(names) = &status {
+                mapped.ambiguous.push(format!("{}: {}", line(t), names.join(", ")));
+            }
+            // Only a plain unmatched transaction can wait: an
+            // ambiguous one is an error in the rules either way.
+            let later = rules.later.get(&t.id).filter(|_| status == Status::Unmatched);
+            let comment = match later {
+                None => "not mapped yet".to_string(),
+                Some(l) => match &l.note {
+                    None => "not mapped yet, marked later".to_string(),
+                    Some(note) => format!("not mapped yet, marked later: {note}"),
+                },
+            };
+            outcome.status = match later {
+                Some(l) => Status::Later(l.note.clone()),
+                None => status,
+            };
+            vec![fallback(config, t, seq, "unmatched", &comment)]
+        }
+    };
+    (outcome, produced)
+}
+
+/// Balance snapshots stand in for running balances where there are none:
+/// checks each against the books and writes it as a balance assertion.
+fn balance_snapshots(config: &Config, loaded: &Loaded, g: &mut Generated, findings: &mut Findings) {
     for (name, data) in &loaded.sources {
         if data.has_running_balance {
             continue;
@@ -447,14 +488,17 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
             });
         }
     }
+}
 
-    // Transfers.
-    let (pairs, unpaired) = transfers::pair(&legs, config.books.transfer_window_days);
+/// Pairs the two sides of each transfer, tags them with each other, and
+/// reports the sides left without one.
+fn pair_transfers(config: &Config, loaded: &Loaded, legs: &[Leg], g: &mut Generated, findings: &mut Findings) {
+    let window = config.books.transfer_window_days;
+    let (pairs, unpaired) = transfers::pair(legs, window);
     for (i, j) in pairs {
         g.txs[legs[i].ledger_idx].tags.push(("transfer-pair".into(), legs[j].id.clone()));
         g.txs[legs[j].ledger_idx].tags.push(("transfer-pair".into(), legs[i].id.clone()));
     }
-    let window = config.books.transfer_window_days;
     let (mut inside, mut edge) = (Vec::new(), Vec::new());
     for i in unpaired {
         let l = &legs[i];
@@ -478,8 +522,19 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
             )
             .details(edge);
     }
+}
 
-    // Findings about the outcomes.
+/// Reports what became of the transactions: the ambiguous and invalid ones
+/// (a line each, from applying the rules), how much of each source is mapped,
+/// and the ones that are ignored or won't be mapped.
+fn report_outcomes(
+    config: &Config,
+    loaded: &Loaded,
+    g: &Generated,
+    ambiguous: Vec<String>,
+    invalid: Vec<String>,
+    findings: &mut Findings,
+) {
     if !ambiguous.is_empty() {
         findings
             .error("ambiguous", format!("{} transactions match several rules of equal priority", ambiguous.len()))
@@ -495,23 +550,19 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
         // Ambiguous and invalid ones are booked to the fallback account too.
         // Ones marked later are as well, but they're acknowledged, so the
         // source's policy is only about the rest.
-        let unmatched: Vec<&BankTransaction> =
-            data.txs.iter().filter(|t| !matches!(g.outcomes[&t.id].status, Status::Rule(_) | Status::Pin)).collect();
-        let later = unmatched.iter().filter(|t| matches!(g.outcomes[&t.id].status, Status::Later(_))).count();
-        let unmatched: Vec<&BankTransaction> =
-            unmatched.into_iter().filter(|t| !matches!(g.outcomes[&t.id].status, Status::Later(_))).collect();
+        let status = |t: &BankTransaction| &g.outcomes[&t.id].status;
+        let open: Vec<&BankTransaction> =
+            data.txs.iter().filter(|t| !matches!(status(t), Status::Rule(_) | Status::Pin)).collect();
         let total: Decimal = data.txs.iter().map(|t| t.amount.abs()).sum();
-        let open: Decimal = data
-            .txs
-            .iter()
-            .filter(|t| !matches!(g.outcomes[&t.id].status, Status::Rule(_) | Status::Pin))
-            .map(|t| t.amount.abs())
-            .sum();
+        let open_amount: Decimal = open.iter().map(|t| t.amount.abs()).sum();
         let pct = if total.is_zero() {
             Decimal::ONE_HUNDRED
         } else {
-            ((total - open) / total * Decimal::ONE_HUNDRED).round()
+            ((total - open_amount) / total * Decimal::ONE_HUNDRED).round()
         };
+        let (later, unmatched): (Vec<&BankTransaction>, Vec<&BankTransaction>) =
+            open.into_iter().partition(|t| matches!(status(t), Status::Later(_)));
+        let later = later.len();
         let later_note = match later {
             0 => String::new(),
             1 => "; 1 more marked later".to_string(),
@@ -541,9 +592,7 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
         };
         let d = findings.push(severity, "not mapped", summary);
         if source.unmatched != Policy::Allow {
-            for t in &unmatched {
-                d.detail(line(t));
-            }
+            d.details(unmatched.iter().map(|t| line(t)));
         }
         d.detail(format!("→ `konter unmatched {name}` prints a rule stub for each"));
     }
@@ -555,15 +604,23 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
         .transactions()
         .filter_map(|t| g.outcomes[&t.id].ignored.as_ref().map(|r| format!("{}: {r}", line(t))))
         .collect();
-    for (label, list) in [("won't map", unknown), ("ignored", ignored)] {
+    for (category, list) in [("won't map", unknown), ("ignored", ignored)] {
         if !list.is_empty() {
-            findings
-                .info(if label == "ignored" { "ignored" } else { "won't map" }, format!("{} transactions", list.len()))
-                .details(list);
+            findings.info(category, format!("{} transactions", list.len())).details(list);
         }
     }
+}
 
-    // Dead rules, pins and later marks.
+/// Reports the rules that match nothing, and the pins and later marks for
+/// transactions that don't exist. `matched_rules`: the names of the pattern
+/// rules that matched something.
+fn report_dead_rules(
+    config: &Config,
+    rules: &Rules,
+    g: &Generated,
+    matched_rules: &BTreeSet<&str>,
+    findings: &mut Findings,
+) {
     let mut dead: Vec<String> = rules
         .patterns
         .iter()
@@ -589,8 +646,10 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
     if !dead.is_empty() {
         findings.warn("dead rule", format!("{} rules match nothing", dead.len())).details(dead);
     }
+}
 
-    // Later marks on transactions that are mapped after all.
+/// Reports the later marks on transactions that are mapped after all.
+fn report_stale_later(rules: &Rules, g: &Generated, findings: &mut Findings) {
     let stale: Vec<String> = rules
         .later
         .values()
@@ -606,7 +665,6 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
     if !stale.is_empty() {
         findings.warn("stale later", format!("{} transactions marked later are mapped", stale.len())).details(stale);
     }
-    g
 }
 
 #[cfg(test)]
