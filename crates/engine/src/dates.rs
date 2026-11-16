@@ -56,6 +56,11 @@ fn ymd(y: &str, m: &str, d: &str) -> Result<Date> {
     Ok(Date::new(y.parse()?, m.parse()?, d.parse()?)?)
 }
 
+/// How many days apart two dates are, whichever comes first.
+pub fn days_between(a: Date, b: Date) -> i64 {
+    (a.duration_since(b).as_secs() / 86_400).abs()
+}
+
 /// Adds months, clamping to the end of the month (Jan 31 + 1 month = Feb 28).
 pub fn add_months(date: Date, months: i32) -> Date {
     // jiff's month arithmetic already clamps to the last day of the month.

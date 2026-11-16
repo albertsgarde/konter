@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use jiff::civil::Date;
 use rust_decimal::Decimal;
 
+use crate::dates::days_between;
+
 /// One side of a transfer between two imported sources.
 #[derive(Clone, Debug)]
 pub struct Leg {
@@ -15,10 +17,6 @@ pub struct Leg {
     pub date: Date,
     pub amount: Decimal,
     pub id: String,
-}
-
-pub fn days_between(a: Date, b: Date) -> i64 {
-    (a.duration_since(b).as_secs() / 86_400).abs()
 }
 
 /// Pairs legs going opposite ways between the same two sources, with opposite

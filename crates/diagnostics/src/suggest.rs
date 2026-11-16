@@ -8,12 +8,12 @@ use std::fmt::Write as _;
 use jiff::civil::Date;
 use rust_decimal::Decimal;
 
+use konter_engine::dates::days_between;
 use konter_engine::dates::parse_dmy_dot;
 use konter_engine::engine::Status;
 use konter_engine::model::{BankTransaction, name_instead, normalize};
 use konter_engine::money::{fmt_num, parse_plain};
 use konter_engine::pipeline::Build;
-use konter_engine::transfers::days_between;
 
 /// A rule name from a description: lowercase letters, digits and dashes.
 pub fn slug(text: &str) -> String {

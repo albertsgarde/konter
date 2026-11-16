@@ -438,7 +438,7 @@ fn check(config: &Config, s: &Subscription, as_of: Date, g: &Generated, findings
         .filter(|d| *d > as_of);
 
     if let Some(d) = oldest_unpaid
-        && crate::transfers::days_between(as_of, d) > s.grace_days
+        && crate::dates::days_between(as_of, d) > s.grace_days
     {
         findings.warn(
             "deficit",

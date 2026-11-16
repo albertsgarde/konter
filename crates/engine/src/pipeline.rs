@@ -60,7 +60,7 @@ pub fn assemble(
         let fetched = source.formats.contains(&crate::config::Format::EnableBanking)
             && config.banks.get(&source.bank).is_some_and(|b| b.enable_banking.is_some());
         if let Some(covered) = data.and_then(|d| d.covered_until()) {
-            let age = crate::transfers::days_between(as_of, covered);
+            let age = crate::dates::days_between(as_of, covered);
             let how = if fetched {
                 "run `konter fetch`".to_string()
             } else {
@@ -151,8 +151,7 @@ fn history_before_the_data(
             // A week's gap is a quiet start, and an opening balance of zero a
             // new account: the same test as the opening balance remark.
             let new_account = data.and_then(|d| d.opening).is_some_and(|o| o.is_zero());
-            if first <= start || crate::transfers::days_between(first, start) <= 7 || new_account || first <= kept_from
-            {
+            if first <= start || crate::dates::days_between(first, start) <= 7 || new_account || first <= kept_from {
                 return;
             }
             (

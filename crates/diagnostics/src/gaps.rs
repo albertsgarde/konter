@@ -17,12 +17,12 @@ use rust_decimal::Decimal;
 
 use crate::suggest::{category_hint, group_key};
 use konter_engine::config::{Config, Policy};
+use konter_engine::dates::days_between;
 use konter_engine::engine::{Generated, Status, UNKNOWN_IN, UNKNOWN_OUT, is_fallback_account};
 use konter_engine::model::BankTransaction;
 use konter_engine::model::name_instead;
 use konter_engine::sources::Loaded;
 use konter_engine::tags;
-use konter_engine::transfers::days_between;
 
 mod html;
 

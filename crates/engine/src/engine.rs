@@ -6,6 +6,7 @@ use anyhow::{Result, bail};
 use rust_decimal::Decimal;
 
 use crate::config::{Config, Policy};
+use crate::dates::days_between;
 use crate::findings::{Findings, Severity};
 use crate::model::{BankTransaction, LedgerTransaction, Posting, Provenance, name_instead, quoted_description};
 use crate::money::fmt_num;
@@ -288,7 +289,7 @@ fn opening_balances(config: &Config, loaded: &Loaded, g: &mut Generated, finding
             continue;
         }
         let start = config.source_start(source);
-        if transfers::days_between(first, start) > 7 {
+        if days_between(first, start) > 7 {
             findings.warn(
                 "opening balance",
                 format!(

@@ -12,10 +12,11 @@ use std::ops::Range;
 use common::{NORDEA, Rng, build, config, danish, nordea_csv, nordea_rel, rules};
 use jiff::civil::date;
 use konter_engine::config::Config;
+use konter_engine::dates::days_between;
 use konter_engine::findings::Findings;
 use konter_engine::money::{Amount, fmt_num, parse_danish, parse_plain};
 use konter_engine::sources::{self, SourceData};
-use konter_engine::transfers::{Leg, days_between, pair};
+use konter_engine::transfers::{Leg, pair};
 use rust_decimal::Decimal;
 
 // ── Transfer pairing (docs/spec.md §6) ─────────────────────────────────

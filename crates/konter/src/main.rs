@@ -949,7 +949,7 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<Da
         // ...unless the last stored fetch is old: storing one now and then
         // records how far the data reaches, even for a quiet account.
         let last_fetch = fetches().filter_map(|f| f.exported).max();
-        let recent = last_fetch.is_some_and(|d| konter_engine::transfers::days_between(today(), d) <= 30);
+        let recent = last_fetch.is_some_and(|d| konter_engine::dates::days_between(today(), d) <= 30);
         if new == 0 && unreferenced == 0 && recent {
             writeln!(Stdout, "  nothing new")?;
             fetched_any = true;
