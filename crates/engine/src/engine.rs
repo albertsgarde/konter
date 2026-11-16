@@ -17,6 +17,9 @@ pub const TRANSFERS: &str = "assets:transfers";
 pub const OPENING: &str = "equity:opening-balances";
 pub const UNKNOWN_OUT: &str = "expenses:unknown";
 pub const UNKNOWN_IN: &str = "income:unknown";
+/// What a pin is reported as where a rule's name would be, as in the `rule`
+/// tag. No rule can have the name.
+pub const PIN: &str = "pin";
 
 /// What happened to one bank transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -379,15 +382,17 @@ fn map<'a>(
         rules.patterns.iter().filter(|r| r.when.matches(t)).map(|r| (r.name.as_str(), r.priority, &r.output)).collect();
     candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
     mapped.matched_rules.extend(candidates.iter().map(|c| c.0));
-    let chosen: Result<(String, &Output), Status> = if let Some(pin) = rules.pins.get(&t.id) {
-        Ok(("pin".into(), &pin.output))
+    // What maps it: the name it goes by, its output, and the status that gives.
+    let chosen: Result<(&str, &Output, Status), Status> = if let Some(pin) = rules.pins.get(&t.id) {
+        Ok((PIN, &pin.output, Status::Pin))
     } else if candidates.is_empty() {
         Err(Status::Unmatched)
     } else if candidates.len() > 1 && candidates[0].1 == candidates[1].1 {
         let top = candidates[0].1;
         Err(Status::Ambiguous(candidates.iter().filter(|c| c.1 == top).map(|c| c.0.to_string()).collect()))
     } else {
-        Ok((candidates[0].0.to_string(), candidates[0].2))
+        let (name, _, output) = candidates[0];
+        Ok((name, output, Status::Rule(name.to_string())))
     };
     let mut outcome = Outcome {
         status: Status::Unmatched,
@@ -397,9 +402,9 @@ fn map<'a>(
         ignored: None,
     };
     let produced = match chosen {
-        Ok((label, output)) => match apply(config, rules, t, seq, &label, output) {
+        Ok((label, output, status)) => match apply(config, rules, t, seq, label, output) {
             Ok(applied) => {
-                outcome.status = if label == "pin" { Status::Pin } else { Status::Rule(label.clone()) };
+                outcome.status = status;
                 if let Some(to) = applied.transfer_to {
                     mapped.legs.push(Leg {
                         ledger_idx: next,
@@ -416,7 +421,7 @@ fn map<'a>(
             }
             Err(e) => {
                 mapped.invalid.push(format!("{}: {label}: {e}", line(t)));
-                outcome.status = Status::Invalid { rule: label.clone(), error: e.to_string() };
+                outcome.status = Status::Invalid { rule: label.to_string(), error: e.to_string() };
                 vec![fallback(config, t, seq, "invalid", &format!("rule {label} failed: {e}"))]
             }
         },

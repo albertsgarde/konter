@@ -380,8 +380,8 @@ impl Rules {
                 if !valid_name(&name) {
                     bail!("rule names use lowercase letters, digits and dashes");
                 }
-                if name == "pin" {
-                    bail!("a rule can't be named \"pin\": that's what pins are reported as");
+                if name == crate::engine::PIN {
+                    bail!("a rule can't be named {:?}: that's what pins are reported as", crate::engine::PIN);
                 }
                 let when: RawCondition =
                     table.remove("when").context("missing `when`")?.try_into().context("invalid `when`")?;
