@@ -34,7 +34,7 @@ The recipes run the tool's working copy, so a change to the tool shows up in the
 
 `konter build` also writes a small site in `build/`, to open in a browser: a front page (`index.html`), the spending page (`spending.html`), the income page (`income.html`, the same page for income accounts) and the gaps page (`gaps.html`). `just web`, `just exp`, `just inc` and `just gaps` write it fresh and open one of them; `just more report` writes it without opening anything. The spending page shows spending per account and month. The account column and the month header stay in place while you scroll, accounts open and close, and clicking a number lists the transactions behind it. Clicking a column heading sorts by it. Subscriptions paid yearly or quarterly can be spread over the months they cover, and money moved into accounts marked `set_aside = true` in `config/sources.toml` (a charity account, say) can count as money out, with what's later paid from them left out so nothing counts twice. It reads the whole books, so hand-written entries count too. The site isn't committed.
 
-`just fetch`, and `just web`, `just exp`, `just inc` and `just gaps` (the site's pages) are in the `justfile`; the rest are in `more.just` and run as `just more <recipe>`: `is` (monthly income statement), `bs`, `exp` (hledger's expenses table), `reg <account>`, `subs`, `gaps` (as text), `unmapped`, `coverage`, `forecast`, `ui`, `web` (hledger-web), or any hledger command via `hl …`.
+`just fetch`, and `just web`, `just exp`, `just inc` and `just gaps` (the site's pages) are in the `justfile`; the rest are in `more.just` and run as `just more <recipe>`: `is` (monthly income statement), `bs`, `exp` (hledger's expenses table), `reg <account>`, `subs`, `gaps` (as text), `unmapped`, `coverage`, `forecast`, `ui`, `web` (hledger-web), or any hledger command via `hl …`. On a server, `setup-server`, `daily`, `auto-start` and `auto-push` run the daily fetch and commit to the books' `auto` bookmark ([server.md](server.md)).
 
 ## Where things live
 
@@ -46,4 +46,5 @@ The recipes run the tool's working copy, so a change to the tool shows up in the
 | Hand-written transactions | `config/transactions.toml` |
 | The books, for hledger (generated; never edit) | `ledger/main.journal`, which includes `generated.journal` and `forecast.journal` |
 | Raw bank data (never edit) | `data/<bank>/<account>/`, hashes in `data/MANIFEST` |
-| Enable Banking key and sessions | `~/.config/konter/` (outside the repo) |
+| Enable Banking key and sessions, links begun with `konter link --start`, the relay's `relay.toml` | `~/.config/konter/` (outside the repo) |
+| The relay's login, encryption store and outbox (on a server) | `~/.local/state/konter-relay/` |
