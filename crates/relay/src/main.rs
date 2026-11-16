@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use konter_repo::fetch::{expand_home, write_private};
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
@@ -134,13 +135,6 @@ fn state_home() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".local/state"))
 }
 
-fn expand_home(path: &Path) -> PathBuf {
-    match (path.strip_prefix("~"), std::env::var_os("HOME")) {
-        (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
-        _ => path.to_path_buf(),
-    }
-}
-
 /// A digest waiting in the outbox, and then the one the conversation is about.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Digest {
@@ -176,19 +170,6 @@ impl Conversation {
     fn save(&self, config: &Config) -> Result<()> {
         write_private(&Conversation::path(config), &serde_json::to_vec_pretty(self)?)
     }
-}
-
-/// Written whole and then renamed into place, readable only by the owner.
-fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let dir = path.parent().context("no parent folder")?;
-    std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{}.tmp", path.file_name().unwrap().to_string_lossy()));
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
 }
 
 /// Held while working in the clone, by the daily run and by Claude.

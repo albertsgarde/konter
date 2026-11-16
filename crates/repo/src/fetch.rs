@@ -9,7 +9,8 @@
 //!   `--finish` completes them
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -33,11 +34,48 @@ pub fn config_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config/konter"))
 }
 
-fn expand_home(path: &str) -> PathBuf {
-    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
-        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
-        _ => PathBuf::from(path),
+/// `path` with a leading `~` as the home folder.
+pub fn expand_home(path: &Path) -> PathBuf {
+    match (path.strip_prefix("~"), std::env::var_os("HOME")) {
+        (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => path.to_path_buf(),
     }
+}
+
+/// Writes a file that holds a secret: readable only by its owner (on Unix)
+/// from the moment it's made, and written whole and then renamed into place,
+/// so it's never there half-written.
+pub fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
+    let dir = path.parent().context("no parent folder")?;
+    let name = path.file_name().context("no file name")?.to_string_lossy();
+    let tmp = dir.join(format!(".{name}.tmp"));
+    let write = || -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        // One left behind may be open to others, and `mode` only applies to
+        // a file that's made here.
+        match std::fs::remove_file(&tmp) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&tmp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    };
+    write().with_context(|| format!("writing {}", path.display()))
+}
+
+/// What a TOML file in the config folder holds, or nothing if it isn't there.
+fn load_or_default<T: Default + serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+    if !path.exists() {
+        return Ok(T::default());
+    }
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
 /// `enable-banking.toml`.
@@ -88,20 +126,11 @@ impl Sessions {
     }
 
     pub fn load() -> Result<Sessions> {
-        let path = Sessions::path()?;
-        if !path.exists() {
-            return Ok(Sessions::default());
-        }
-        let text = std::fs::read_to_string(&path)?;
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        load_or_default(&Sessions::path()?)
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Sessions::path()?;
-        std::fs::create_dir_all(path.parent().unwrap())?;
-        std::fs::write(&path, toml::to_string_pretty(self)?)?;
-        restrict_permissions(&path);
-        Ok(())
+        write_private(&Sessions::path()?, toml::to_string_pretty(self)?.as_bytes())
     }
 }
 
@@ -126,12 +155,7 @@ impl PendingLinks {
     }
 
     pub fn load() -> Result<PendingLinks> {
-        let path = PendingLinks::path()?;
-        if !path.exists() {
-            return Ok(PendingLinks::default());
-        }
-        let text = std::fs::read_to_string(&path)?;
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        load_or_default(&PendingLinks::path()?)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -142,21 +166,9 @@ impl PendingLinks {
             }
             return Ok(());
         }
-        std::fs::create_dir_all(path.parent().unwrap())?;
-        std::fs::write(&path, toml::to_string_pretty(self)?)?;
-        restrict_permissions(&path);
-        Ok(())
+        write_private(&path, toml::to_string_pretty(self)?.as_bytes())
     }
 }
-
-#[cfg(unix)]
-fn restrict_permissions(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-}
-
-#[cfg(not(unix))]
-fn restrict_permissions(_: &std::path::Path) {}
 
 pub fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).expect("clock before 1970").as_secs()
@@ -200,7 +212,7 @@ pub struct Client {
 
 impl Client {
     pub fn new(settings: &Settings) -> Result<Client> {
-        let key_path = expand_home(&settings.private_key);
+        let key_path = expand_home(Path::new(&settings.private_key));
         let pem = std::fs::read(&key_path).with_context(|| format!("reading {}", key_path.display()))?;
         let token = token(&settings.application_id, &pem, now_secs())?;
         let agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
@@ -342,38 +354,6 @@ pub fn rfc3339(secs: u64) -> String {
     jiff::Timestamp::from_second(secs as i64).map(|t| t.to_string()).unwrap_or_default()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // A throwaway 2048-bit test key, used only to check the JWT format.
-    const TEST_KEY: &str = include_str!("../tests/fixtures/test-key.pem");
-    const TEST_PUB: &str = include_str!("../tests/fixtures/test-key.pub.pem");
-
-    #[test]
-    fn signs_a_valid_jwt() {
-        let token = token("app-id", TEST_KEY.as_bytes(), 1_800_000_000).unwrap();
-        let header = jsonwebtoken::decode_header(&token).unwrap();
-        assert_eq!(header.kid.as_deref(), Some("app-id"));
-        assert_eq!(header.alg, Algorithm::RS256);
-        let mut validation = jsonwebtoken::Validation::new(Algorithm::RS256);
-        validation.set_audience(&["api.enablebanking.com"]);
-        validation.set_issuer(&["enablebanking.com"]);
-        validation.validate_exp = false;
-        let key = jsonwebtoken::DecodingKey::from_rsa_pem(TEST_PUB.as_bytes()).unwrap();
-        let data = jsonwebtoken::decode::<Value>(&token, &key, &validation).unwrap();
-        assert_eq!(data.claims["exp"], 1_800_000_000u64 + TOKEN_SECONDS);
-    }
-
-    #[test]
-    fn redirect_parsing() {
-        assert_eq!(parse_redirect("https://localhost/cb?state=s1&code=abc", "s1").unwrap(), "abc");
-        assert_eq!(parse_redirect("  abc  ", "s1").unwrap(), "abc");
-        assert!(parse_redirect("https://localhost/cb?state=other&code=abc", "s1").is_err());
-        assert!(parse_redirect("https://localhost/cb?error=access_denied", "s1").is_err());
-    }
-}
-
 /// Drops `null` fields, recursively. The API lists every field and fills in
 /// few, so this shrinks stored responses by about two thirds without losing
 /// anything (a missing field and a null one mean the same).
@@ -425,8 +405,62 @@ pub fn to_raw_json(doc: &Value) -> String {
 }
 
 #[cfg(test)]
-mod raw_json_tests {
+mod tests {
     use super::*;
+
+    // A throwaway 2048-bit test key, used only to check the JWT format.
+    const TEST_KEY: &str = include_str!("../tests/fixtures/test-key.pem");
+    const TEST_PUB: &str = include_str!("../tests/fixtures/test-key.pub.pem");
+
+    #[test]
+    fn signs_a_valid_jwt() {
+        let token = token("app-id", TEST_KEY.as_bytes(), 1_800_000_000).unwrap();
+        let header = jsonwebtoken::decode_header(&token).unwrap();
+        assert_eq!(header.kid.as_deref(), Some("app-id"));
+        assert_eq!(header.alg, Algorithm::RS256);
+        let mut validation = jsonwebtoken::Validation::new(Algorithm::RS256);
+        validation.set_audience(&["api.enablebanking.com"]);
+        validation.set_issuer(&["enablebanking.com"]);
+        validation.validate_exp = false;
+        let key = jsonwebtoken::DecodingKey::from_rsa_pem(TEST_PUB.as_bytes()).unwrap();
+        let data = jsonwebtoken::decode::<Value>(&token, &key, &validation).unwrap();
+        assert_eq!(data.claims["exp"], 1_800_000_000u64 + TOKEN_SECONDS);
+    }
+
+    #[test]
+    fn secrets_are_written_for_the_owner_only() {
+        let dir = std::env::temp_dir().join(format!("konter-write-private-{}", std::process::id()));
+        let path = dir.join("nested/sessions.toml");
+        write_private(&path, b"first").unwrap();
+        // Over what's there, and over a temporary file left behind.
+        std::fs::write(dir.join("nested/.sessions.toml.tmp"), "left behind").unwrap();
+        write_private(&path, b"second").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+        assert!(!dir.join("nested/.sessions.toml.tmp").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_leading_tilde_is_the_home_folder() {
+        let home = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"));
+        assert_eq!(expand_home(Path::new("~/keys/app.pem")), home.join("keys/app.pem"));
+        assert_eq!(expand_home(Path::new("~")), home);
+        assert_eq!(expand_home(Path::new("/etc/~/x")), Path::new("/etc/~/x"));
+        assert_eq!(expand_home(Path::new("~other/x")), Path::new("~other/x"));
+    }
+
+    #[test]
+    fn redirect_parsing() {
+        assert_eq!(parse_redirect("https://localhost/cb?state=s1&code=abc", "s1").unwrap(), "abc");
+        assert_eq!(parse_redirect("  abc  ", "s1").unwrap(), "abc");
+        assert!(parse_redirect("https://localhost/cb?state=other&code=abc", "s1").is_err());
+        assert!(parse_redirect("https://localhost/cb?error=access_denied", "s1").is_err());
+    }
 
     #[test]
     fn round_trips_without_nulls() {
