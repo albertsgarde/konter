@@ -2047,7 +2047,6 @@ dependencies = [
  "konter-engine",
  "konter-repo",
  "konter-report",
- "libc",
  "rust_decimal",
  "serde_json",
 ]

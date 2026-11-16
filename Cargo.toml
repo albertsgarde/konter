@@ -12,6 +12,10 @@ edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
 
+# Nothing here needs `unsafe`, and this keeps it that way.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
 [workspace.dependencies]
 konter-diagnostics = { path = "crates/diagnostics" }
 konter-engine = { path = "crates/engine" }
@@ -24,7 +28,6 @@ csv = "1.4.0"
 insta = "1.49.0"
 jiff = { version = "0.2.40", features = ["serde"] }
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto", "use_pem"] }
-libc = "0.2.191"
 regex = "1.13.1"
 rust_decimal = "1.43.0"
 serde = { version = "1.0.229", features = ["derive"] }

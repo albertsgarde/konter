@@ -177,18 +177,44 @@ enum Command {
     },
 }
 
-fn main() -> ExitCode {
-    // Exit quietly when piped into e.g. `head`, instead of panicking.
-    #[cfg(unix)]
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+/// Standard output, for `write!` and `writeln!`. `println!` panics when the
+/// write fails, as it does once whoever reads the output has gone away
+/// (`konter list | head`). This hands the failure back instead, so the command
+/// stops there and `main` ends it quietly.
+struct Stdout;
+
+impl Stdout {
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> Result<(), StdoutError> {
+        std::io::Write::write_fmt(&mut std::io::stdout(), args).map_err(StdoutError)
     }
+}
+
+/// A write to standard output that failed.
+#[derive(Debug)]
+struct StdoutError(std::io::Error);
+
+impl std::fmt::Display for StdoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "writing to standard output: {}", self.0)
+    }
+}
+
+impl std::error::Error for StdoutError {}
+
+/// What a shell reports for a command killed by SIGPIPE (128 + 13), which is
+/// how a command that writes to a closed pipe ends unless it handles it.
+const CLOSED_PIPE: u8 = 141;
+
+fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
-        Err(e) => {
-            eprintln!("error: {e:#}");
-            ExitCode::from(2)
-        }
+        Err(e) => match e.downcast_ref::<StdoutError>() {
+            Some(StdoutError(io)) if io.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::from(CLOSED_PIPE),
+            _ => {
+                eprintln!("error: {e:#}");
+                ExitCode::from(2)
+            }
+        },
     }
 }
 
@@ -206,16 +232,16 @@ fn run() -> Result<ExitCode> {
             let mut build = books::build(&repo, &config, as_of)?;
             books::write(&repo, &build)?;
             consent_warnings(&config, &mut build.findings);
-            println!("wrote ledger/{} (--as-of {as_of})", books::GENERATED);
+            writeln!(Stdout, "wrote ledger/{} (--as-of {as_of})", books::GENERATED)?;
             let dir = site_dir(&repo);
             match write_site(&repo, &config, &build) {
-                Ok(()) => println!("wrote the site in {}/\n", repo.rel(&dir)),
+                Ok(()) => writeln!(Stdout, "wrote the site in {}/\n", repo.rel(&dir))?,
                 Err(e) => {
-                    println!();
+                    writeln!(Stdout)?;
                     build.findings.warn("report", format!("couldn't write the site in {}/: {e:#}", repo.rel(&dir)));
                 }
             }
-            print!("{}", build.findings.render(full));
+            write!(Stdout, "{}", build.findings.render(full))?;
             Ok(exit_code(&build.findings, strict))
         }
         Command::Report => {
@@ -225,23 +251,29 @@ fn run() -> Result<ExitCode> {
             let build = books::build(&repo, &config, as_of)?;
             write_site(&repo, &config, &build)?;
             let dir = site_dir(&repo);
-            println!("wrote the site in {}/  (open file://{})", repo.rel(&dir), dir.join(Page::Home.file()).display());
+            writeln!(
+                Stdout,
+                "wrote the site in {}/  (open file://{})",
+                repo.rel(&dir),
+                dir.join(Page::Home.file()).display()
+            )?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Verify { full, strict } => {
             let mut findings = books::verify(&repo, &config)?;
             // An independent check of the journals as written.
             books::hledger_check(&repo, &mut findings);
-            print!("{}", findings.render(full));
+            write!(Stdout, "{}", findings.render(full))?;
             Ok(exit_code(&findings, strict))
         }
         Command::Subscriptions { as_of } => {
             let as_of = as_of.unwrap_or_else(|| jiff::Zoned::now().date());
             let build = books::build(&repo, &config, as_of)?;
-            println!(
+            writeln!(
+                Stdout,
                 "{:<24} {:<8} {:>10} {:>11}  {:<28} {:<10}  {:<10}  {:<10}",
                 "subscription", "kind", "price", "balance", "status", "paid until", "next due", "committed"
-            );
+            )?;
             for (sub, state) in build.rules.subscriptions.iter().zip(&build.subscriptions) {
                 let status = match (state.oldest_unpaid, state.credit) {
                     (Some(d), c) => format!("{} owed since {d}", fmt_num(-c)),
@@ -249,7 +281,8 @@ fn run() -> Result<ExitCode> {
                     _ => "ok".into(),
                 };
                 let opt = |d: Option<jiff::civil::Date>| d.map(|d| d.to_string()).unwrap_or_else(|| "-".into());
-                println!(
+                writeln!(
+                    Stdout,
                     "{:<24} {:<8} {:>10} {:>11}  {:<28} {:<10}  {:<10}  {:<10}",
                     sub.name,
                     sub.kind_name(),
@@ -259,12 +292,12 @@ fn run() -> Result<ExitCode> {
                     opt(state.paid_until),
                     opt(state.next_due),
                     opt(state.committed_until)
-                );
+                )?;
             }
-            println!("\nbalance: paid minus due as of {as_of}; negative means owed.");
-            println!("paid until: the last due date the payments cover, oldest first.");
+            writeln!(Stdout, "\nbalance: paid minus due as of {as_of}; negative means owed.")?;
+            writeln!(Stdout, "paid until: the last due date the payments cover, oldest first.")?;
             if build.rules.subscriptions.iter().any(|s| s.variable) {
-                println!("~price: an estimate; each payment settles one due date, which books what was paid.");
+                writeln!(Stdout, "~price: an estimate; each payment settles one due date, which books what was paid.")?;
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -272,7 +305,7 @@ fn run() -> Result<ExitCode> {
             let build = books::build(&repo, &config, jiff::Zoned::now().date())?;
             let categories = reference_categories(&repo);
             let (text, groups) = konter_diagnostics::suggest::suggest(&build, &categories, source.as_deref(), min);
-            print!("{text}");
+            write!(Stdout, "{text}")?;
             eprintln!(
                 "{groups} suggested rules; fill in `account` (or use another output) and paste into the source's file in config/rules/"
             );
@@ -287,7 +320,7 @@ fn run() -> Result<ExitCode> {
             let build = books::build(&repo, &config, jiff::Zoned::now().date())?;
             let filter = konter_diagnostics::gaps::Filter { sources, skip, from, to };
             let gaps = konter_diagnostics::gaps::gaps(&config, &build.loaded, &build.generated, &filter);
-            print!("{}", gaps.render(&config, &reference_categories(&repo), top));
+            write!(Stdout, "{}", gaps.render(&config, &reference_categories(&repo), top))?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Digest { json } => {
@@ -295,15 +328,15 @@ fn run() -> Result<ExitCode> {
             consent_warnings(&config, &mut build.findings);
             let digest = konter_diagnostics::digest::digest(&build);
             if json {
-                println!("{}", serde_json::to_string_pretty(&digest.json())?);
+                writeln!(Stdout, "{}", serde_json::to_string_pretty(&digest.json())?)?;
             } else {
-                print!("{}", digest.text());
+                write!(Stdout, "{}", digest.text())?;
             }
             Ok(ExitCode::SUCCESS)
         }
         Command::Coverage { source } => {
             let build = books::build(&repo, &config, jiff::Zoned::now().date())?;
-            print!("{}", konter_diagnostics::coverage::coverage(&build, source.as_deref()));
+            write!(Stdout, "{}", konter_diagnostics::coverage::coverage(&build, source.as_deref()))?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Unmatched { source } => {
@@ -322,9 +355,9 @@ fn run() -> Result<ExitCode> {
                     _ => continue,
                 }
                 count += 1;
-                println!("# {}  {}  {}  {}", t.source, t.booked, fmt_num(t.amount), quoted_description(t));
-                println!("[pin.\"{}\"]", t.id);
-                println!("account = \"\"  # was {}\n", fallback_account(&t.source, t.amount));
+                writeln!(Stdout, "# {}  {}  {}  {}", t.source, t.booked, fmt_num(t.amount), quoted_description(t))?;
+                writeln!(Stdout, "[pin.\"{}\"]", t.id)?;
+                writeln!(Stdout, "account = \"\"  # was {}\n", fallback_account(&t.source, t.amount))?;
             }
             match later {
                 0 => eprintln!("{count} unmatched transactions"),
@@ -340,7 +373,8 @@ fn run() -> Result<ExitCode> {
                     continue;
                 }
                 for t in &data.txs {
-                    println!(
+                    writeln!(
+                        Stdout,
                         "{}  {}  {:>12}  {:>12}  {}",
                         t.id,
                         t.booked,
@@ -348,7 +382,7 @@ fn run() -> Result<ExitCode> {
                         t.balance_after.map(fmt_num).unwrap_or_default(),
                         name_instead(t)
                             .map_or_else(|| t.description.clone(), |name| format!("{} [{name}]", t.description))
-                    );
+                    )?;
                 }
             }
             Ok(ExitCode::SUCCESS)
@@ -356,32 +390,32 @@ fn run() -> Result<ExitCode> {
         Command::Explain { id } => {
             let build = books::build(&repo, &config, jiff::Zoned::now().date())?;
             let t = build.loaded.find(&id).with_context(|| format!("no bank transaction with ID {id}"))?;
-            print_transaction(t);
+            print_transaction(t)?;
             let outcome = &build.generated.outcomes[&id];
-            println!("\nrules:");
+            writeln!(Stdout, "\nrules:")?;
             if let Some(pin) = build.rules.pins.get(&id) {
-                println!("  pin in {} (always wins)", pin.file);
+                writeln!(Stdout, "  pin in {} (always wins)", pin.file)?;
             }
             if let Some(later) = build.rules.later.get(&id) {
                 let note = later.note.as_deref().map(|n| format!(": {n}")).unwrap_or_default();
-                println!("  marked later in {}{note}", later.file);
+                writeln!(Stdout, "  marked later in {}{note}", later.file)?;
             }
             if outcome.candidates.is_empty() {
-                println!("  no pattern rule matches");
+                writeln!(Stdout, "  no pattern rule matches")?;
             }
             for (name, priority) in &outcome.candidates {
                 let file = build.rules.patterns.iter().find(|r| &r.name == name).map_or("?", |r| r.file.as_str());
-                println!("  rule {name:?} in {file} matches (priority {priority})");
+                writeln!(Stdout, "  rule {name:?} in {file} matches (priority {priority})")?;
             }
-            println!("  → {:?}", outcome.status);
-            println!("\njournal output:");
+            writeln!(Stdout, "  → {:?}", outcome.status)?;
+            writeln!(Stdout, "\njournal output:")?;
             if outcome.ledger.is_empty() {
-                println!("  (none: {})", outcome.ignored.as_deref().unwrap_or("ignored"));
+                writeln!(Stdout, "  (none: {})", outcome.ignored.as_deref().unwrap_or("ignored"))?;
             }
             for &i in &outcome.ledger {
                 let mut text = String::new();
                 render_transaction(&mut text, &build.generated.txs[i]);
-                println!("{text}");
+                writeln!(Stdout, "{text}")?;
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -394,11 +428,12 @@ fn run() -> Result<ExitCode> {
             let client = fetch::Client::new(&fetch::Settings::load()?)?;
             for a in client.aspsps(&country)? {
                 let days = a.get("maximum_consent_validity").and_then(|v| v.as_u64()).map(|s| s / 86_400);
-                println!(
+                writeln!(
+                    Stdout,
                     "{:<40} max consent {} days",
                     a.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
                     days.map(|d| d.to_string()).unwrap_or_else(|| "?".into())
-                );
+                )?;
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -406,9 +441,9 @@ fn run() -> Result<ExitCode> {
             (false, None) => {
                 let (url, pending) = start_link(&config, &bank, days)?;
                 let redirect = fetch::Settings::load()?.redirect_url;
-                println!("1. Open this URL and log in with MitID:\n\n   {url}\n");
-                println!("2. You'll end up on {redirect} (the page may fail to load; that's fine).");
-                println!("   Paste the full URL from the address bar here and press Enter:");
+                writeln!(Stdout, "1. Open this URL and log in with MitID:\n\n   {url}\n")?;
+                writeln!(Stdout, "2. You'll end up on {redirect} (the page may fail to load; that's fine).")?;
+                writeln!(Stdout, "   Paste the full URL from the address bar here and press Enter:")?;
                 let mut pasted = String::new();
                 std::io::stdin().read_line(&mut pasted)?;
                 finish_link(&config, &bank, &pasted, &pending)
@@ -418,7 +453,7 @@ fn run() -> Result<ExitCode> {
                 let mut links = fetch::PendingLinks::load()?;
                 links.banks.insert(bank.clone(), pending);
                 links.save()?;
-                println!("{url}");
+                writeln!(Stdout, "{url}")?;
                 eprintln!("Log in there, then run `konter link {bank} --finish '<the URL you end up on>'`.");
                 Ok(ExitCode::SUCCESS)
             }
@@ -445,17 +480,18 @@ fn run() -> Result<ExitCode> {
             if let Some(obj) = info.as_object_mut() {
                 obj.remove("session_id");
             }
-            println!("{}", serde_json::to_string_pretty(&info)?);
+            writeln!(Stdout, "{}", serde_json::to_string_pretty(&info)?)?;
             for account in &session.accounts {
                 let details = client.get(&format!("/accounts/{}/details", account.uid), &[])?;
                 let field = |k: &str| details.get(k).and_then(|v| v.as_str()).unwrap_or("-").to_string();
-                println!(
+                writeln!(
+                    Stdout,
                     "{:<20} name: {}  product: {}  details: {}",
                     account.iban.as_deref().unwrap_or("?"),
                     field("name"),
                     field("product"),
                     field("details")
-                );
+                )?;
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -537,7 +573,9 @@ fn report_books(books: &[konter_engine::model::LedgerTransaction]) -> Vec<konter
 
 /// The categories in the reference export, if there is one.
 fn reference_categories(repo: &Repo) -> std::collections::BTreeMap<(jiff::civil::Date, Decimal), String> {
-    load::reference_export(repo).map(|text| konter_diagnostics::suggest::reference_categories(&text)).unwrap_or_default()
+    load::reference_export(repo)
+        .map(|text| konter_diagnostics::suggest::reference_categories(&text))
+        .unwrap_or_default()
 }
 
 fn exit_code(findings: &Findings, strict: bool) -> ExitCode {
@@ -545,35 +583,35 @@ fn exit_code(findings: &Findings, strict: bool) -> ExitCode {
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
-fn print_transaction(t: &BankTransaction) {
-    println!("{}  ({})", t.id, t.source);
-    println!("  booked        {}", t.booked);
-    let opt = |label: &str, v: Option<String>| {
-        if let Some(v) = v {
-            println!("  {label:<13} {v}");
-        }
+fn print_transaction(t: &BankTransaction) -> Result<()> {
+    writeln!(Stdout, "{}  ({})", t.id, t.source)?;
+    writeln!(Stdout, "  booked        {}", t.booked)?;
+    let opt = |label: &str, v: Option<String>| match v {
+        Some(v) => writeln!(Stdout, "  {label:<13} {v}"),
+        None => Ok(()),
     };
-    opt("time", t.time.map(|x| x.strftime("%H:%M").to_string()));
-    opt("value date", t.value_date.map(|d| d.to_string()));
-    opt("purchased", t.transaction_date.map(|d| d.to_string()));
-    println!("  amount        {} {}", fmt_num(t.amount), t.currency);
+    opt("time", t.time.map(|x| x.strftime("%H:%M").to_string()))?;
+    opt("value date", t.value_date.map(|d| d.to_string()))?;
+    opt("purchased", t.transaction_date.map(|d| d.to_string()))?;
+    writeln!(Stdout, "  amount        {} {}", fmt_num(t.amount), t.currency)?;
     opt(
         "original",
         t.original_amount.map(|a| format!("{} {}", fmt_num(a), t.original_currency.clone().unwrap_or_default())),
-    );
-    println!("  description   {:?}", t.description);
-    opt("counterparty", t.counterparty.clone());
-    opt("cp. name", t.counterparty_name.clone());
-    opt("balance after", t.balance_after.map(fmt_num));
-    opt("bank ref", t.bank_ref.clone());
-    println!("  raw ({}):", t.format);
+    )?;
+    writeln!(Stdout, "  description   {:?}", t.description)?;
+    opt("counterparty", t.counterparty.clone())?;
+    opt("cp. name", t.counterparty_name.clone())?;
+    opt("balance after", t.balance_after.map(fmt_num))?;
+    opt("bank ref", t.bank_ref.clone())?;
+    writeln!(Stdout, "  raw ({}):", t.format)?;
     for (k, v) in &t.raw {
-        println!("    {k:<15} {v:?}");
+        writeln!(Stdout, "    {k:<15} {v:?}")?;
     }
-    println!("  found in:");
+    writeln!(Stdout, "  found in:")?;
     for o in &t.origins {
-        println!("    data/{}:{}", o.file, o.line);
+        writeln!(Stdout, "    data/{}:{}", o.file, o.line)?;
     }
+    Ok(())
 }
 
 fn add_export(
@@ -639,28 +677,28 @@ fn add_export(
         None => false,
     };
     if in_place {
-        println!("data/{rel} is already in place");
+        writeln!(Stdout, "data/{rel} is already in place")?;
     } else {
         add_raw_file(repo, &rel, &bytes)?;
-        println!("copied to data/{rel}");
+        writeln!(Stdout, "copied to data/{rel}")?;
     }
     manifest.entries.insert(rel.clone(), sha256_hex(&bytes));
     if let Some((sidecar, text)) = &sidecar {
         if sidecar_in_place {
-            println!("data/{sidecar} is already in place");
+            writeln!(Stdout, "data/{sidecar} is already in place")?;
         } else {
             add_raw_file(repo, sidecar, text.as_bytes())?;
-            println!("wrote data/{sidecar}");
+            writeln!(Stdout, "wrote data/{sidecar}")?;
         }
         manifest.entries.insert(sidecar.clone(), sha256_hex(text.as_bytes()));
     }
     manifest.save(&repo.manifest())?;
     drop(lock);
-    println!("recorded in data/MANIFEST\n");
+    writeln!(Stdout, "recorded in data/MANIFEST\n")?;
 
     let mut findings = Findings::default();
     load::source(repo, config, &source_name, &mut findings)?;
-    print!("{}", findings.render(false));
+    write!(Stdout, "{}", findings.render(false))?;
     Ok(exit_code(&findings, false))
 }
 
@@ -690,7 +728,8 @@ fn consent_warnings(config: &Config, findings: &mut Findings) {
         let Ok(until) = session.valid_until.parse::<jiff::Timestamp>() else { continue };
         let days = (until.as_second() - now.as_second()) / 86_400;
         if days < 0 {
-            findings.warn("consent", format!("Enable Banking consent for {bank} has expired; run `konter link {bank}`"));
+            findings
+                .warn("consent", format!("Enable Banking consent for {bank} has expired; run `konter link {bank}`"));
         } else if days < 14 {
             findings.warn(
                 "consent",
@@ -703,20 +742,23 @@ fn consent_warnings(config: &Config, findings: &mut Findings) {
 fn init(dir: &Path) -> Result<ExitCode> {
     let start = jiff::Zoned::now().date().first_of_month();
     let (git, written) = init::init(dir, start)?;
-    println!("Made new books in {}/, starting {start}:", dir.display());
+    writeln!(Stdout, "Made new books in {}/, starting {start}:", dir.display())?;
     for rel in written {
-        println!("  {rel}");
+        writeln!(Stdout, "  {rel}")?;
     }
     match git {
-        init::Git::Initialized => println!("It's a new git repo (with jj: `jj git init --colocate` in it)."),
-        init::Git::Existing => println!("It was a git repo already."),
-        init::Git::Failed(why) => println!("It isn't a git repo yet ({why}): make it one before adding bank data."),
+        init::Git::Initialized => writeln!(Stdout, "It's a new git repo (with jj: `jj git init --colocate` in it).")?,
+        init::Git::Existing => writeln!(Stdout, "It was a git repo already.")?,
+        init::Git::Failed(why) => {
+            writeln!(Stdout, "It isn't a git repo yet ({why}): make it one before adding bank data.")?
+        }
     }
-    println!(
+    writeln!(
+        Stdout,
         "\nThe books are private: keep them in a private repo. Next, add your bank accounts to\n\
          config/sources.toml (the examples there show how), get bank data in (konter's\n\
          docs/fetching.md), and `konter build`."
-    );
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -775,13 +817,13 @@ fn finish_link(config: &Config, bank: &str, redirect: &str, pending: &fetch::Pen
         accounts: accounts.clone(),
     };
     let mut sessions = fetch::Sessions::load()?;
-    println!("\nLinked {bank} until {}. Accounts:", stored.valid_until);
+    writeln!(Stdout, "\nLinked {bank} until {}. Accounts:", stored.valid_until)?;
     sessions.banks.insert(bank.to_string(), stored);
     sessions.save()?;
     for a in &accounts {
         let iban = a.iban.as_deref().unwrap_or("?");
         let source = source_for_iban(config, bank, iban).unwrap_or("not in config/sources.toml; add it to import it");
-        println!("  {iban:<24} {source}");
+        writeln!(Stdout, "  {iban:<24} {source}")?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -847,7 +889,7 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<ji
                     .unwrap_or_else(|| config.source_start(source))
             }
         };
-        println!("{name}: fetching from {date_from} …");
+        writeln!(Stdout, "{name}: fetching from {date_from} …")?;
         let (pages, date_from) = client.transaction_pages(&account.uid, &date_from.to_string())?;
         let balances = client.balances(&account.uid)?;
         let now = jiff::Timestamp::now();
@@ -876,11 +918,11 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<ji
         let recent =
             last_fetch.is_some_and(|d| konter_engine::transfers::days_between(jiff::Zoned::now().date(), d) <= 30);
         if new == 0 && unreferenced == 0 && recent {
-            println!("  nothing new");
+            writeln!(Stdout, "  nothing new")?;
             fetched_any = true;
             continue;
         }
-        println!("  {} new transactions", new + unreferenced);
+        writeln!(Stdout, "  {} new transactions", new + unreferenced)?;
         let rel = format!("{dir}/eb-{}.json", now.strftime("%Y-%m-%dT%H-%M-%S"));
         let text = fetch::to_raw_json(&fetch::strip_nulls(doc));
         let lock = manifest::lock(repo)?;
@@ -889,14 +931,14 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<ji
         manifest.entries.insert(rel.clone(), sha256_hex(text.as_bytes()));
         manifest.save(&repo.manifest())?;
         drop(lock);
-        println!("  wrote data/{rel}");
+        writeln!(Stdout, "  wrote data/{rel}")?;
         load::source(repo, config, name, &mut findings)?;
         fetched_any = true;
     }
     if !fetched_any && !findings.has_errors() {
         findings.warn("fetch", "nothing to fetch: no source has \"enable-banking\" in its formats");
     }
-    print!("\n{}", findings.render(false));
+    write!(Stdout, "\n{}", findings.render(false))?;
     Ok(exit_code(&findings, false))
 }
 

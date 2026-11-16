@@ -6,6 +6,9 @@ edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "konter"
 path = "src/main.rs"
@@ -20,9 +23,6 @@ clap.workspace = true
 jiff.workspace = true
 rust_decimal.workspace = true
 serde_json.workspace = true
-
-[target."cfg(unix)".dependencies]
-libc.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
