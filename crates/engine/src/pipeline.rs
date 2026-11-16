@@ -100,10 +100,9 @@ pub fn assemble(
         .map(|(a, label)| format!("{a}  (used by {label})"))
         .collect();
     if !undeclared.is_empty() {
-        let d = findings.error("accounts", "accounts used by rules aren't declared in config/accounts.toml");
-        for u in undeclared {
-            d.detail(u);
-        }
+        findings
+            .error("accounts", "accounts used by rules aren't declared in config/accounts.toml")
+            .details(undeclared);
     }
 
     let mut generated = engine::generate(config, &rules, &loaded, &mut findings);

@@ -466,35 +466,29 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
         if covered { inside.push(msg) } else { edge.push(msg) }
     }
     if !inside.is_empty() {
-        let d = findings.error("unpaired transfer", format!("{} transfers have no matching other side", inside.len()));
-        inside.into_iter().for_each(|m| {
-            d.detail(m);
-        });
+        findings
+            .error("unpaired transfer", format!("{} transfers have no matching other side", inside.len()))
+            .details(inside);
     }
     if !edge.is_empty() {
-        let d = findings.warn(
-            "unpaired transfer",
-            format!("{} transfers have no other side yet (outside the other account's data)", edge.len()),
-        );
-        edge.into_iter().for_each(|m| {
-            d.detail(m);
-        });
+        findings
+            .warn(
+                "unpaired transfer",
+                format!("{} transfers have no other side yet (outside the other account's data)", edge.len()),
+            )
+            .details(edge);
     }
 
     // Findings about the outcomes.
     if !ambiguous.is_empty() {
-        let d = findings
-            .error("ambiguous", format!("{} transactions match several rules of equal priority", ambiguous.len()));
-        ambiguous.into_iter().for_each(|m| {
-            d.detail(m);
-        });
+        findings
+            .error("ambiguous", format!("{} transactions match several rules of equal priority", ambiguous.len()))
+            .details(ambiguous);
     }
     if !invalid.is_empty() {
-        let d = findings
-            .error("invalid rule", format!("{} transactions matched a rule that doesn't fit them", invalid.len()));
-        invalid.into_iter().for_each(|m| {
-            d.detail(m);
-        });
+        findings
+            .error("invalid rule", format!("{} transactions matched a rule that doesn't fit them", invalid.len()))
+            .details(invalid);
     }
     for (name, data) in &loaded.sources {
         let source = &config.sources[name];
@@ -563,11 +557,9 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
         .collect();
     for (label, list) in [("won't map", unknown), ("ignored", ignored)] {
         if !list.is_empty() {
-            let d = findings
-                .info(if label == "ignored" { "ignored" } else { "won't map" }, format!("{} transactions", list.len()));
-            list.into_iter().for_each(|m| {
-                d.detail(m);
-            });
+            findings
+                .info(if label == "ignored" { "ignored" } else { "won't map" }, format!("{} transactions", list.len()))
+                .details(list);
         }
     }
 
@@ -595,10 +587,7 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
         dead.push(format!("later {:?} ({}): no such transaction", later.id, later.file));
     }
     if !dead.is_empty() {
-        let d = findings.warn("dead rule", format!("{} rules match nothing", dead.len()));
-        dead.into_iter().for_each(|m| {
-            d.detail(m);
-        });
+        findings.warn("dead rule", format!("{} rules match nothing", dead.len())).details(dead);
     }
 
     // Later marks on transactions that are mapped after all.
@@ -615,10 +604,7 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
         })
         .collect();
     if !stale.is_empty() {
-        let d = findings.warn("stale later", format!("{} transactions marked later are mapped", stale.len()));
-        stale.into_iter().for_each(|m| {
-            d.detail(m);
-        });
+        findings.warn("stale later", format!("{} transactions marked later are mapped", stale.len())).details(stale);
     }
     g
 }

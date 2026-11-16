@@ -71,10 +71,7 @@ pub fn all_sources(repo: &Repo, config: &Config, findings: &mut Findings) -> Res
     let rels = manifest::raw_files(repo)?;
     let orphans = sources::orphans(config, &rels);
     if !orphans.is_empty() {
-        let d = findings.error("data", "raw files in a directory that belongs to no imported source");
-        for rel in orphans {
-            d.detail(rel.clone());
-        }
+        findings.error("data", "raw files in a directory that belongs to no imported source").details(orphans);
     }
     let mut loaded = Loaded { sources: Default::default() };
     for (name, source_config) in &config.sources {

@@ -92,4 +92,10 @@ impl Diag {
         self.details.push(line.into());
         self
     }
+
+    /// Adds each of `lines` as a detail line.
+    pub fn details<S: Into<String>>(&mut self, lines: impl IntoIterator<Item = S>) -> &mut Diag {
+        self.details.extend(lines.into_iter().map(Into::into));
+        self
+    }
 }

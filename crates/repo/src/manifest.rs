@@ -162,10 +162,7 @@ pub fn verify(repo: &Repo, findings: &mut Findings) -> Result<()> {
     if bad.is_empty() {
         findings.ok("manifest", format!("{} raw files match data/MANIFEST", files.len()));
     } else {
-        let d = findings.error("manifest", format!("{} raw files don't match data/MANIFEST", bad.len()));
-        for line in bad {
-            d.detail(line);
-        }
+        findings.error("manifest", format!("{} raw files don't match data/MANIFEST", bad.len())).details(bad);
     }
     Ok(())
 }

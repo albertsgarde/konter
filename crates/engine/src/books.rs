@@ -107,10 +107,7 @@ impl Problems {
         let mut ok = true;
         let mut error = |message: String, details: Vec<String>| {
             ok = false;
-            let d = findings.error("books", message);
-            for line in details {
-                d.detail(line);
-            }
+            findings.error("books", message).details(details);
         };
         if !self.unbalanced.is_empty() {
             error(format!("{} transactions don't balance", self.unbalanced.len()), self.unbalanced);

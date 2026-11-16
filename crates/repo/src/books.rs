@@ -49,9 +49,7 @@ fn stray_files(repo: &Repo, findings: &mut Findings) {
     }
     stray.sort();
     let d = findings.warn("ledger", "files in ledger/ that konter doesn't write; nothing reads them");
-    for name in stray {
-        d.detail(format!("ledger/{name}"));
-    }
+    d.details(stray.iter().map(|name| format!("ledger/{name}")));
     d.detail(format!("→ accounts go in {}, hand-written transactions in {}", manual::ACCOUNTS, manual::TRANSACTIONS));
 }
 
@@ -78,10 +76,10 @@ pub fn hledger_check(repo: &Repo, findings: &mut Findings) {
             findings.ok("hledger", "hledger check --strict");
         }
         Ok(out) => {
-            let d = findings.error("hledger", "hledger check --strict failed");
-            for line in String::from_utf8_lossy(&out.stderr).lines().filter(|l| !l.trim().is_empty()).take(30) {
-                d.detail(line.to_string());
-            }
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            findings
+                .error("hledger", "hledger check --strict failed")
+                .details(stderr.lines().filter(|l| !l.trim().is_empty()).take(30));
         }
     }
 }

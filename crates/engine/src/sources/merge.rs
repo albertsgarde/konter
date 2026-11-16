@@ -176,9 +176,7 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
     if !conflicts.is_empty() {
         let d =
             findings.error("overlap conflict", format!("{name}: files disagree on {} transactions", conflicts.len()));
-        for c in conflicts {
-            d.detail(c);
-        }
+        d.details(conflicts);
         if formats.len() > 1 && cutover.is_none() {
             d.detail(format!(
                 "→ {name} has data in several formats; without running balances they can't be matched up. \
@@ -363,10 +361,9 @@ fn in_chain_order(
     let ordered = order.into_iter().map(|i| txs[i].take().expect("the chain has every transaction once")).collect();
     let chain_ok = breaks.is_empty();
     if !chain_ok {
-        let d = findings.error("balance chain", format!("{name}: running balance breaks {} times", breaks.len()));
-        for b in breaks {
-            d.detail(b);
-        }
+        findings
+            .error("balance chain", format!("{name}: running balance breaks {} times", breaks.len()))
+            .details(breaks);
     }
     (ordered, chain_ok)
 }
