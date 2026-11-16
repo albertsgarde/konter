@@ -4,6 +4,7 @@ description = "The command line: turns raw bank data into hledger books using a 
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "konter"

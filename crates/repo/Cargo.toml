@@ -4,6 +4,7 @@ description = "The repository on disk: reading inputs, writing journals, hledger
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 konter-engine.workspace = true

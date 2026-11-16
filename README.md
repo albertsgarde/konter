@@ -45,3 +45,6 @@ The tool and the books are two repos. This one is the tool; the books (bank data
 4. `just` lists the daily recipes and `just more` the rest. They run the tool's working copy on the books.
 
 [docs/fetching.md](docs/fetching.md) says how to get bank data, [docs/usage.md](docs/usage.md) how to use the tool, and [docs/rules.md](docs/rules.md) how to write rules.
+
+## Licence
+Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT licence](LICENSE-MIT), at your option. Unless you say otherwise, any contribution you submit for inclusion in this work, as defined in the Apache-2.0 licence, is dual licensed as above, without any additional terms or conditions.
