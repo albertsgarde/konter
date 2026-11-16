@@ -3,8 +3,10 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use jiff::civil::Date;
 use rust_decimal::Decimal;
 
+use konter_diagnostics::gaps::Filter;
 use konter_engine::config::{Config, Format};
 use konter_engine::dates::Period;
 use konter_engine::engine::{Status, fallback_account};
@@ -48,7 +50,7 @@ enum Command {
     Build {
         /// The date the books are built for (default: today).
         #[arg(long)]
-        as_of: Option<jiff::civil::Date>,
+        as_of: Option<Date>,
         /// Print every detail line instead of the first few per item.
         #[arg(long)]
         full: bool,
@@ -70,7 +72,7 @@ enum Command {
     /// Show every subscription: balance, deficits, what it's paid until, next due date, commitment.
     Subscriptions {
         #[arg(long)]
-        as_of: Option<jiff::civil::Date>,
+        as_of: Option<Date>,
     },
     /// Propose pattern rules for groups of similar unmatched transactions.
     Suggest {
@@ -90,10 +92,10 @@ enum Command {
         skip: Vec<String>,
         /// Only transactions booked on or after this date.
         #[arg(long)]
-        from: Option<jiff::civil::Date>,
+        from: Option<Date>,
         /// Only transactions booked on or before this date.
         #[arg(long)]
-        to: Option<jiff::civil::Date>,
+        to: Option<Date>,
         /// How many groups to list; 0 lists all.
         #[arg(long, default_value_t = 25)]
         top: usize,
@@ -156,7 +158,7 @@ enum Command {
         source: Option<String>,
         /// Fetch from this date instead of 30 days before the last fetched transaction.
         #[arg(long)]
-        from: Option<jiff::civil::Date>,
+        from: Option<Date>,
     },
     /// Add a raw export file to data/ and check it against existing data.
     AddExport {
@@ -173,7 +175,7 @@ enum Command {
         balance: Option<String>,
         /// The date --balance applies to (default: today).
         #[arg(long, requires = "balance")]
-        balance_date: Option<jiff::civil::Date>,
+        balance_date: Option<Date>,
     },
 }
 
@@ -224,280 +226,321 @@ fn run() -> Result<ExitCode> {
     if let Command::Init { dir } = &cli.command {
         return init(dir);
     }
-    let repo = Repo::discover(cli.root.as_deref().unwrap_or(Path::new(".")))?;
-    let config = load::config(&repo)?;
+    let repo = &Repo::discover(cli.root.as_deref().unwrap_or(Path::new(".")))?;
+    let config = &load::config(repo)?;
     match cli.command {
-        Command::Build { as_of, full, strict } => {
-            let as_of = as_of.unwrap_or_else(|| jiff::Zoned::now().date());
-            let mut build = books::build(&repo, &config, as_of)?;
-            books::write(&repo, &build)?;
-            consent_warnings(&config, &mut build.findings);
-            writeln!(Stdout, "wrote ledger/{} (--as-of {as_of})", books::GENERATED)?;
-            let dir = site_dir(&repo);
-            match write_site(&repo, &config, &build) {
-                Ok(()) => writeln!(Stdout, "wrote the site in {}/\n", repo.rel(&dir))?,
-                Err(e) => {
-                    writeln!(Stdout)?;
-                    build.findings.warn("report", format!("couldn't write the site in {}/: {e:#}", repo.rel(&dir)));
-                }
-            }
-            write!(Stdout, "{}", build.findings.render(full))?;
-            Ok(exit_code(&build.findings, strict))
-        }
-        Command::Report => {
-            let journal = std::fs::read_to_string(repo.ledger(books::GENERATED)).unwrap_or_default();
-            let as_of = konter_engine::journal::as_of_from_header(&journal)
-                .context("ledger/generated.journal has no `--as-of` header; run `konter build` first")?;
-            let build = books::build(&repo, &config, as_of)?;
-            write_site(&repo, &config, &build)?;
-            let dir = site_dir(&repo);
-            writeln!(
-                Stdout,
-                "wrote the site in {}/  (open file://{})",
-                repo.rel(&dir),
-                dir.join(Page::Home.file()).display()
-            )?;
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Verify { full, strict } => {
-            let mut findings = books::verify(&repo, &config)?;
-            // An independent check of the journals as written.
-            books::hledger_check(&repo, &mut findings);
-            write!(Stdout, "{}", findings.render(full))?;
-            Ok(exit_code(&findings, strict))
-        }
-        Command::Subscriptions { as_of } => {
-            let as_of = as_of.unwrap_or_else(|| jiff::Zoned::now().date());
-            let build = books::build(&repo, &config, as_of)?;
-            writeln!(
-                Stdout,
-                "{:<24} {:<8} {:>10} {:>11}  {:<28} {:<10}  {:<10}  {:<10}",
-                "subscription", "kind", "price", "balance", "status", "paid until", "next due", "committed"
-            )?;
-            for (sub, state) in build.rules.subscriptions.iter().zip(&build.subscriptions) {
-                let status = match (state.oldest_unpaid, state.credit) {
-                    (Some(d), c) => format!("{} owed since {d}", fmt_num(-c)),
-                    (None, c) if c > rust_decimal::Decimal::ZERO => format!("{} paid ahead", fmt_num(c)),
-                    _ => "ok".into(),
-                };
-                let opt = |d: Option<jiff::civil::Date>| d.map(|d| d.to_string()).unwrap_or_else(|| "-".into());
-                writeln!(
-                    Stdout,
-                    "{:<24} {:<8} {:>10} {:>11}  {:<28} {:<10}  {:<10}  {:<10}",
-                    sub.name,
-                    sub.kind_name(),
-                    if sub.variable { format!("~{}", fmt_num(state.price)) } else { fmt_num(state.price) },
-                    fmt_num(state.credit),
-                    status,
-                    opt(state.paid_until),
-                    opt(state.next_due),
-                    opt(state.committed_until)
-                )?;
-            }
-            writeln!(Stdout, "\nbalance: paid minus due as of {as_of}; negative means owed.")?;
-            writeln!(Stdout, "paid until: the last due date the payments cover, oldest first.")?;
-            if build.rules.subscriptions.iter().any(|s| s.variable) {
-                writeln!(Stdout, "~price: an estimate; each payment settles one due date, which books what was paid.")?;
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Suggest { source, min } => {
-            let build = books::build(&repo, &config, jiff::Zoned::now().date())?;
-            let categories = reference_categories(&repo);
-            let (text, groups) = konter_diagnostics::suggest::suggest(&build, &categories, source.as_deref(), min);
-            write!(Stdout, "{text}")?;
-            eprintln!(
-                "{groups} suggested rules; fill in `account` (or use another output) and paste into the source's file in config/rules/"
-            );
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Gaps { sources, skip, from, to, top } => {
-            for name in sources.iter().chain(&skip) {
-                if !config.sources.get(name).is_some_and(|s| s.imported()) {
-                    bail!("{name} is not an imported source");
-                }
-            }
-            let build = books::build(&repo, &config, jiff::Zoned::now().date())?;
-            let filter = konter_diagnostics::gaps::Filter { sources, skip, from, to };
-            let gaps = konter_diagnostics::gaps::gaps(&config, &build.loaded, &build.generated, &filter);
-            write!(Stdout, "{}", gaps.render(&config, &reference_categories(&repo), top))?;
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Digest { json } => {
-            let mut build = books::build(&repo, &config, jiff::Zoned::now().date())?;
-            consent_warnings(&config, &mut build.findings);
-            let digest = konter_diagnostics::digest::digest(&build);
-            if json {
-                writeln!(Stdout, "{}", serde_json::to_string_pretty(&digest.json())?)?;
-            } else {
-                write!(Stdout, "{}", digest.text())?;
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Coverage { source } => {
-            let build = books::build(&repo, &config, jiff::Zoned::now().date())?;
-            write!(Stdout, "{}", konter_diagnostics::coverage::coverage(&build, source.as_deref()))?;
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Unmatched { source } => {
-            let build = books::build(&repo, &config, jiff::Zoned::now().date())?;
-            let (mut count, mut later) = (0, 0);
-            for t in build.loaded.transactions() {
-                if source.as_ref().is_some_and(|s| *s != t.source) {
-                    continue;
-                }
-                match build.generated.outcomes[&t.id].status {
-                    Status::Unmatched => {}
-                    Status::Later(_) => {
-                        later += 1;
-                        continue;
-                    }
-                    _ => continue,
-                }
-                count += 1;
-                writeln!(Stdout, "# {}  {}  {}  {}", t.source, t.booked, fmt_num(t.amount), quoted_description(t))?;
-                writeln!(Stdout, "[pin.\"{}\"]", t.id)?;
-                writeln!(Stdout, "account = \"\"  # was {}\n", fallback_account(&t.source, t.amount))?;
-            }
-            match later {
-                0 => eprintln!("{count} unmatched transactions"),
-                _ => eprintln!("{count} unmatched transactions, and {later} more marked later (left out)"),
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::List { source } => {
-            let mut findings = Findings::default();
-            let loaded = load::all_sources(&repo, &config, &mut findings)?;
-            for (name, data) in &loaded.sources {
-                if source.as_ref().is_some_and(|s| s != name) {
-                    continue;
-                }
-                for t in &data.txs {
-                    writeln!(
-                        Stdout,
-                        "{}  {}  {:>12}  {:>12}  {}",
-                        t.id,
-                        t.booked,
-                        fmt_num(t.amount),
-                        t.balance_after.map(fmt_num).unwrap_or_default(),
-                        name_instead(t)
-                            .map_or_else(|| t.description.clone(), |name| format!("{} [{name}]", t.description))
-                    )?;
-                }
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Explain { id } => {
-            let build = books::build(&repo, &config, jiff::Zoned::now().date())?;
-            let t = build.loaded.find(&id).with_context(|| format!("no bank transaction with ID {id}"))?;
-            print_transaction(t)?;
-            let outcome = &build.generated.outcomes[&id];
-            writeln!(Stdout, "\nrules:")?;
-            if let Some(pin) = build.rules.pins.get(&id) {
-                writeln!(Stdout, "  pin in {} (always wins)", pin.file)?;
-            }
-            if let Some(later) = build.rules.later.get(&id) {
-                let note = later.note.as_deref().map(|n| format!(": {n}")).unwrap_or_default();
-                writeln!(Stdout, "  marked later in {}{note}", later.file)?;
-            }
-            if outcome.candidates.is_empty() {
-                writeln!(Stdout, "  no pattern rule matches")?;
-            }
-            for (name, priority) in &outcome.candidates {
-                let file = build.rules.patterns.iter().find(|r| &r.name == name).map_or("?", |r| r.file.as_str());
-                writeln!(Stdout, "  rule {name:?} in {file} matches (priority {priority})")?;
-            }
-            writeln!(Stdout, "  → {:?}", outcome.status)?;
-            writeln!(Stdout, "\njournal output:")?;
-            if outcome.ledger.is_empty() {
-                writeln!(Stdout, "  (none: {})", outcome.ignored.as_deref().unwrap_or("ignored"))?;
-            }
-            for &i in &outcome.ledger {
-                let mut text = String::new();
-                render_transaction(&mut text, &build.generated.txs[i]);
-                writeln!(Stdout, "{text}")?;
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::Build { as_of, full, strict } => build(repo, config, as_of, full, strict),
+        Command::Report => report(repo, config),
+        Command::Verify { full, strict } => verify(repo, config, full, strict),
+        Command::Subscriptions { as_of } => subscriptions(repo, config, as_of),
+        Command::Suggest { source, min } => suggest(repo, config, source.as_deref(), min),
+        Command::Gaps { sources, skip, from, to, top } => gaps(repo, config, &Filter { sources, skip, from, to }, top),
+        Command::Digest { json } => digest(repo, config, json),
+        Command::Coverage { source } => coverage(repo, config, source.as_deref()),
+        Command::Unmatched { source } => unmatched(repo, config, source.as_deref()),
+        Command::List { source } => list(repo, config, source.as_deref()),
+        Command::Explain { id } => explain(repo, config, &id),
         Command::AddExport { file, source, name, balance, balance_date } => {
             let balance = balance.map(|b| konter_engine::money::parse_plain(&b)).transpose()?;
-            let snapshot = balance.map(|b| (balance_date.unwrap_or_else(|| jiff::Zoned::now().date()), b));
-            add_export(&repo, &config, &file, source, name, snapshot)
+            let snapshot = balance.map(|b| (balance_date.unwrap_or_else(today), b));
+            add_export(repo, config, &file, source, name, snapshot)
         }
-        Command::Banks { country } => {
-            let client = fetch::Client::new(&fetch::Settings::load()?)?;
-            for a in client.aspsps(&country)? {
-                let days = a.get("maximum_consent_validity").and_then(|v| v.as_u64()).map(|s| s / 86_400);
-                writeln!(
-                    Stdout,
-                    "{:<40} max consent {} days",
-                    a.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
-                    days.map(|d| d.to_string()).unwrap_or_else(|| "?".into())
-                )?;
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Link { bank, days, start, finish } => match (start, finish) {
-            (false, None) => {
-                let (url, pending) = start_link(&config, &bank, days)?;
-                let redirect = fetch::Settings::load()?.redirect_url;
-                writeln!(Stdout, "1. Open this URL and log in with MitID:\n\n   {url}\n")?;
-                writeln!(Stdout, "2. You'll end up on {redirect} (the page may fail to load; that's fine).")?;
-                writeln!(Stdout, "   Paste the full URL from the address bar here and press Enter:")?;
-                let mut pasted = String::new();
-                std::io::stdin().read_line(&mut pasted)?;
-                finish_link(&config, &bank, &pasted, &pending)
-            }
-            (true, _) => {
-                let (url, pending) = start_link(&config, &bank, days)?;
-                let mut links = fetch::PendingLinks::load()?;
-                links.banks.insert(bank.clone(), pending);
-                links.save()?;
-                writeln!(Stdout, "{url}")?;
-                eprintln!("Log in there, then run `konter link {bank} --finish '<the URL you end up on>'`.");
-                Ok(ExitCode::SUCCESS)
-            }
-            (false, Some(redirect)) => {
-                let mut links = fetch::PendingLinks::load()?;
-                let pending = links
-                    .banks
-                    .get(&bank)
-                    .cloned()
-                    .with_context(|| format!("no link to {bank} begun: run `konter link {bank} --start` first"))?;
-                let code = finish_link(&config, &bank, &redirect, &pending)?;
-                // The code in the redirect is single-use, so the pending
-                // link is spent whether or not it worked.
-                links.banks.remove(&bank);
-                links.save()?;
-                Ok(code)
-            }
-        },
-        Command::Session { bank } => {
-            let sessions = fetch::Sessions::load()?;
-            let session = sessions.banks.get(&bank).with_context(|| format!("{bank} isn't linked"))?;
-            let client = fetch::Client::new(&fetch::Settings::load()?)?;
-            let mut info = client.get(&format!("/sessions/{}", session.session_id), &[])?;
-            if let Some(obj) = info.as_object_mut() {
-                obj.remove("session_id");
-            }
-            writeln!(Stdout, "{}", serde_json::to_string_pretty(&info)?)?;
-            for account in &session.accounts {
-                let details = client.get(&format!("/accounts/{}/details", account.uid), &[])?;
-                let field = |k: &str| details.get(k).and_then(|v| v.as_str()).unwrap_or("-").to_string();
-                writeln!(
-                    Stdout,
-                    "{:<20} name: {}  product: {}  details: {}",
-                    account.iban.as_deref().unwrap_or("?"),
-                    field("name"),
-                    field("product"),
-                    field("details")
-                )?;
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Fetch { source, from } => fetch_all(&repo, &config, source, from),
+        Command::Banks { country } => banks(&country),
+        Command::Link { bank, days, start, finish } => link(config, &bank, days, start, finish),
+        Command::Session { bank } => session(&bank),
+        Command::Fetch { source, from } => fetch_all(repo, config, source, from),
         Command::Init { .. } => unreachable!("init is handled before the books are found"),
     }
+}
+
+fn today() -> Date {
+    jiff::Zoned::now().date()
+}
+
+/// `konter build`: writes the journals and the site, and reports what the build found.
+fn build(repo: &Repo, config: &Config, as_of: Option<Date>, full: bool, strict: bool) -> Result<ExitCode> {
+    let as_of = as_of.unwrap_or_else(today);
+    let mut build = books::build(repo, config, as_of)?;
+    books::write(repo, &build)?;
+    consent_warnings(config, &mut build.findings);
+    writeln!(Stdout, "wrote ledger/{} (--as-of {as_of})", books::GENERATED)?;
+    let dir = site_dir(repo);
+    match write_site(repo, config, &build) {
+        Ok(()) => writeln!(Stdout, "wrote the site in {}/\n", repo.rel(&dir))?,
+        Err(e) => {
+            writeln!(Stdout)?;
+            build.findings.warn("report", format!("couldn't write the site in {}/: {e:#}", repo.rel(&dir)));
+        }
+    }
+    write!(Stdout, "{}", build.findings.render(full))?;
+    Ok(exit_code(&build.findings, strict))
+}
+
+/// `konter report`: writes the site for the books as they were last built.
+fn report(repo: &Repo, config: &Config) -> Result<ExitCode> {
+    let journal = std::fs::read_to_string(repo.ledger(books::GENERATED)).unwrap_or_default();
+    let as_of = konter_engine::journal::as_of_from_header(&journal)
+        .context("ledger/generated.journal has no `--as-of` header; run `konter build` first")?;
+    let build = books::build(repo, config, as_of)?;
+    write_site(repo, config, &build)?;
+    let dir = site_dir(repo);
+    writeln!(Stdout, "wrote the site in {}/  (open file://{})", repo.rel(&dir), dir.join(Page::Home.file()).display())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `konter verify`: checks the written journals against a fresh build, and with hledger.
+fn verify(repo: &Repo, config: &Config, full: bool, strict: bool) -> Result<ExitCode> {
+    let mut findings = books::verify(repo, config)?;
+    // An independent check of the journals as written.
+    books::hledger_check(repo, &mut findings);
+    write!(Stdout, "{}", findings.render(full))?;
+    Ok(exit_code(&findings, strict))
+}
+
+/// `konter subscriptions`: where each subscription stands.
+fn subscriptions(repo: &Repo, config: &Config, as_of: Option<Date>) -> Result<ExitCode> {
+    let as_of = as_of.unwrap_or_else(today);
+    let build = books::build(repo, config, as_of)?;
+    writeln!(
+        Stdout,
+        "{:<24} {:<8} {:>10} {:>11}  {:<28} {:<10}  {:<10}  {:<10}",
+        "subscription", "kind", "price", "balance", "status", "paid until", "next due", "committed"
+    )?;
+    for (sub, state) in build.rules.subscriptions.iter().zip(&build.subscriptions) {
+        let status = match (state.oldest_unpaid, state.credit) {
+            (Some(d), c) => format!("{} owed since {d}", fmt_num(-c)),
+            (None, c) if c > rust_decimal::Decimal::ZERO => format!("{} paid ahead", fmt_num(c)),
+            _ => "ok".into(),
+        };
+        let opt = |d: Option<Date>| d.map(|d| d.to_string()).unwrap_or_else(|| "-".into());
+        writeln!(
+            Stdout,
+            "{:<24} {:<8} {:>10} {:>11}  {:<28} {:<10}  {:<10}  {:<10}",
+            sub.name,
+            sub.kind_name(),
+            if sub.variable { format!("~{}", fmt_num(state.price)) } else { fmt_num(state.price) },
+            fmt_num(state.credit),
+            status,
+            opt(state.paid_until),
+            opt(state.next_due),
+            opt(state.committed_until)
+        )?;
+    }
+    writeln!(Stdout, "\nbalance: paid minus due as of {as_of}; negative means owed.")?;
+    writeln!(Stdout, "paid until: the last due date the payments cover, oldest first.")?;
+    if build.rules.subscriptions.iter().any(|s| s.variable) {
+        writeln!(Stdout, "~price: an estimate; each payment settles one due date, which books what was paid.")?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `konter suggest`: rule stubs for groups of similar unmatched transactions.
+fn suggest(repo: &Repo, config: &Config, source: Option<&str>, min: usize) -> Result<ExitCode> {
+    let build = books::build(repo, config, today())?;
+    let categories = reference_categories(repo);
+    let (text, groups) = konter_diagnostics::suggest::suggest(&build, &categories, source, min);
+    write!(Stdout, "{text}")?;
+    eprintln!(
+        "{groups} suggested rules; fill in `account` (or use another output) and paste into the source's file in config/rules/"
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `konter gaps`: where the unmapped money is. `top`: how many groups to list, 0 for all.
+fn gaps(repo: &Repo, config: &Config, filter: &Filter, top: usize) -> Result<ExitCode> {
+    for name in filter.sources.iter().chain(&filter.skip) {
+        if !config.sources.get(name).is_some_and(|s| s.imported()) {
+            bail!("{name} is not an imported source");
+        }
+    }
+    let build = books::build(repo, config, today())?;
+    let gaps = konter_diagnostics::gaps::gaps(config, &build.loaded, &build.generated, filter);
+    write!(Stdout, "{}", gaps.render(config, &reference_categories(repo), top))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `konter digest`: what needs attention, as a short message or as JSON.
+fn digest(repo: &Repo, config: &Config, json: bool) -> Result<ExitCode> {
+    let mut build = books::build(repo, config, today())?;
+    consent_warnings(config, &mut build.findings);
+    let digest = konter_diagnostics::digest::digest(&build);
+    if json {
+        writeln!(Stdout, "{}", serde_json::to_string_pretty(&digest.json())?)?;
+    } else {
+        write!(Stdout, "{}", digest.text())?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `konter coverage`: how much of each account is mapped, per month.
+fn coverage(repo: &Repo, config: &Config, source: Option<&str>) -> Result<ExitCode> {
+    let build = books::build(repo, config, today())?;
+    write!(Stdout, "{}", konter_diagnostics::coverage::coverage(&build, source))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `konter unmatched`: a pin stub for every transaction no rule matches, except those marked later.
+fn unmatched(repo: &Repo, config: &Config, source: Option<&str>) -> Result<ExitCode> {
+    let build = books::build(repo, config, today())?;
+    let (mut count, mut later) = (0, 0);
+    for t in build.loaded.transactions() {
+        if source.is_some_and(|s| s != t.source) {
+            continue;
+        }
+        match build.generated.outcomes[&t.id].status {
+            Status::Unmatched => {}
+            Status::Later(_) => {
+                later += 1;
+                continue;
+            }
+            _ => continue,
+        }
+        count += 1;
+        writeln!(Stdout, "# {}  {}  {}  {}", t.source, t.booked, fmt_num(t.amount), quoted_description(t))?;
+        writeln!(Stdout, "[pin.\"{}\"]", t.id)?;
+        writeln!(Stdout, "account = \"\"  # was {}\n", fallback_account(&t.source, t.amount))?;
+    }
+    match later {
+        0 => eprintln!("{count} unmatched transactions"),
+        _ => eprintln!("{count} unmatched transactions, and {later} more marked later (left out)"),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `konter list`: the bank transactions, in booking order.
+fn list(repo: &Repo, config: &Config, source: Option<&str>) -> Result<ExitCode> {
+    let mut findings = Findings::default();
+    let loaded = load::all_sources(repo, config, &mut findings)?;
+    for (name, data) in &loaded.sources {
+        if source.is_some_and(|s| s != name) {
+            continue;
+        }
+        for t in &data.txs {
+            writeln!(
+                Stdout,
+                "{}  {}  {:>12}  {:>12}  {}",
+                t.id,
+                t.booked,
+                fmt_num(t.amount),
+                t.balance_after.map(fmt_num).unwrap_or_default(),
+                name_instead(t).map_or_else(|| t.description.clone(), |name| format!("{} [{name}]", t.description))
+            )?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `konter explain`: everything about one bank transaction, and what the rules made of it.
+fn explain(repo: &Repo, config: &Config, id: &str) -> Result<ExitCode> {
+    let build = books::build(repo, config, today())?;
+    let t = build.loaded.find(id).with_context(|| format!("no bank transaction with ID {id}"))?;
+    print_transaction(t)?;
+    let outcome = &build.generated.outcomes[id];
+    writeln!(Stdout, "\nrules:")?;
+    if let Some(pin) = build.rules.pins.get(id) {
+        writeln!(Stdout, "  pin in {} (always wins)", pin.file)?;
+    }
+    if let Some(later) = build.rules.later.get(id) {
+        let note = later.note.as_deref().map(|n| format!(": {n}")).unwrap_or_default();
+        writeln!(Stdout, "  marked later in {}{note}", later.file)?;
+    }
+    if outcome.candidates.is_empty() {
+        writeln!(Stdout, "  no pattern rule matches")?;
+    }
+    for (name, priority) in &outcome.candidates {
+        let file = build.rules.patterns.iter().find(|r| &r.name == name).map_or("?", |r| r.file.as_str());
+        writeln!(Stdout, "  rule {name:?} in {file} matches (priority {priority})")?;
+    }
+    writeln!(Stdout, "  → {:?}", outcome.status)?;
+    writeln!(Stdout, "\njournal output:")?;
+    if outcome.ledger.is_empty() {
+        writeln!(Stdout, "  (none: {})", outcome.ignored.as_deref().unwrap_or("ignored"))?;
+    }
+    for &i in &outcome.ledger {
+        let mut text = String::new();
+        render_transaction(&mut text, &build.generated.txs[i]);
+        writeln!(Stdout, "{text}")?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `konter banks`: the banks Enable Banking supports in a country.
+fn banks(country: &str) -> Result<ExitCode> {
+    let client = fetch::Client::new(&fetch::Settings::load()?)?;
+    for a in client.aspsps(country)? {
+        let days = a.get("maximum_consent_validity").and_then(|v| v.as_u64()).map(|s| s / 86_400);
+        writeln!(
+            Stdout,
+            "{:<40} max consent {} days",
+            a.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
+            days.map(|d| d.to_string()).unwrap_or_else(|| "?".into())
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `konter link`: links a bank, in the terminal or in two steps (`--start`, then `--finish`).
+fn link(config: &Config, bank: &str, days: u64, start: bool, finish: Option<String>) -> Result<ExitCode> {
+    match (start, finish) {
+        (false, None) => {
+            let (url, pending) = start_link(config, bank, days)?;
+            let redirect = fetch::Settings::load()?.redirect_url;
+            writeln!(Stdout, "1. Open this URL and log in with MitID:\n\n   {url}\n")?;
+            writeln!(Stdout, "2. You'll end up on {redirect} (the page may fail to load; that's fine).")?;
+            writeln!(Stdout, "   Paste the full URL from the address bar here and press Enter:")?;
+            let mut pasted = String::new();
+            std::io::stdin().read_line(&mut pasted)?;
+            finish_link(config, bank, &pasted, &pending)
+        }
+        (true, _) => {
+            let (url, pending) = start_link(config, bank, days)?;
+            let mut links = fetch::PendingLinks::load()?;
+            links.banks.insert(bank.to_string(), pending);
+            links.save()?;
+            writeln!(Stdout, "{url}")?;
+            eprintln!("Log in there, then run `konter link {bank} --finish '<the URL you end up on>'`.");
+            Ok(ExitCode::SUCCESS)
+        }
+        (false, Some(redirect)) => {
+            let mut links = fetch::PendingLinks::load()?;
+            let pending = links
+                .banks
+                .get(bank)
+                .with_context(|| format!("no link to {bank} begun: run `konter link {bank} --start` first"))?;
+            let code = finish_link(config, bank, &redirect, pending)?;
+            // The code in the redirect is single-use, so the pending link is
+            // spent now that it has worked. One that didn't work is kept, so
+            // that pasting the wrong URL doesn't mean logging in again.
+            links.banks.remove(bank);
+            links.save()?;
+            Ok(code)
+        }
+    }
+}
+
+/// `konter session`: what Enable Banking reports about a linked bank's session.
+fn session(bank: &str) -> Result<ExitCode> {
+    let sessions = fetch::Sessions::load()?;
+    let session = sessions.banks.get(bank).with_context(|| format!("{bank} isn't linked"))?;
+    let client = fetch::Client::new(&fetch::Settings::load()?)?;
+    let mut info = client.get(&format!("/sessions/{}", session.session_id), &[])?;
+    if let Some(obj) = info.as_object_mut() {
+        obj.remove("session_id");
+    }
+    writeln!(Stdout, "{}", serde_json::to_string_pretty(&info)?)?;
+    for account in &session.accounts {
+        let details = client.get(&format!("/accounts/{}/details", account.uid), &[])?;
+        let field = |k: &str| details.get(k).and_then(|v| v.as_str()).unwrap_or("-").to_string();
+        writeln!(
+            Stdout,
+            "{:<20} name: {}  product: {}  details: {}",
+            account.iban.as_deref().unwrap_or("?"),
+            field("name"),
+            field("product"),
+            field("details")
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Where the site goes: build/, which isn't committed.
@@ -572,7 +615,7 @@ fn report_books(books: &[konter_engine::model::LedgerTransaction]) -> Vec<konter
 }
 
 /// The categories in the reference export, if there is one.
-fn reference_categories(repo: &Repo) -> std::collections::BTreeMap<(jiff::civil::Date, Decimal), String> {
+fn reference_categories(repo: &Repo) -> std::collections::BTreeMap<(Date, Decimal), String> {
     load::reference_export(repo)
         .map(|text| konter_diagnostics::suggest::reference_categories(&text))
         .unwrap_or_default()
@@ -620,7 +663,7 @@ fn add_export(
     file: &Path,
     source: Option<String>,
     name: Option<String>,
-    snapshot: Option<(jiff::civil::Date, rust_decimal::Decimal)>,
+    snapshot: Option<(Date, rust_decimal::Decimal)>,
 ) -> Result<ExitCode> {
     let text = load::read_text(file)?;
     let file_name = file.file_name().context("not a file")?.to_string_lossy().into_owned();
@@ -682,7 +725,7 @@ fn add_export(
         add_raw_file(repo, &rel, &bytes)?;
         writeln!(Stdout, "copied to data/{rel}")?;
     }
-    manifest.entries.insert(rel.clone(), sha256_hex(&bytes));
+    manifest.entries.insert(rel, sha256_hex(&bytes));
     if let Some((sidecar, text)) = &sidecar {
         if sidecar_in_place {
             writeln!(Stdout, "data/{sidecar} is already in place")?;
@@ -740,7 +783,7 @@ fn consent_warnings(config: &Config, findings: &mut Findings) {
 }
 
 fn init(dir: &Path) -> Result<ExitCode> {
-    let start = jiff::Zoned::now().date().first_of_month();
+    let start = today().first_of_month();
     let (git, written) = init::init(dir, start)?;
     writeln!(Stdout, "Made new books in {}/, starting {start}:", dir.display())?;
     for rel in written {
@@ -814,13 +857,13 @@ fn finish_link(config: &Config, bank: &str, redirect: &str, pending: &fetch::Pen
             .and_then(|v| v.as_str())
             .unwrap_or(valid_until)
             .to_string(),
-        accounts: accounts.clone(),
+        accounts,
     };
     let mut sessions = fetch::Sessions::load()?;
     writeln!(Stdout, "\nLinked {bank} until {}. Accounts:", stored.valid_until)?;
     sessions.banks.insert(bank.to_string(), stored);
     sessions.save()?;
-    for a in &accounts {
+    for a in &sessions.banks[bank].accounts {
         let iban = a.iban.as_deref().unwrap_or("?");
         let source = source_for_iban(config, bank, iban).unwrap_or("not in config/sources.toml; add it to import it");
         writeln!(Stdout, "  {iban:<24} {source}")?;
@@ -842,7 +885,7 @@ fn source_for_iban<'a>(config: &'a Config, bank: &str, iban: &str) -> Option<&'a
         .map(|(name, _)| name.as_str())
 }
 
-fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<jiff::civil::Date>) -> Result<ExitCode> {
+fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<Date>) -> Result<ExitCode> {
     let settings = fetch::Settings::load()?;
     let sessions = fetch::Sessions::load()?;
     let client = fetch::Client::new(&settings)?;
@@ -915,8 +958,7 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<ji
             .filter(|f| f.rel.ends_with(".json"))
             .filter_map(|f| f.exported)
             .max();
-        let recent =
-            last_fetch.is_some_and(|d| konter_engine::transfers::days_between(jiff::Zoned::now().date(), d) <= 30);
+        let recent = last_fetch.is_some_and(|d| konter_engine::transfers::days_between(today(), d) <= 30);
         if new == 0 && unreferenced == 0 && recent {
             writeln!(Stdout, "  nothing new")?;
             fetched_any = true;
