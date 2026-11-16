@@ -1,0 +1,22 @@
+[package]
+name = "konter-relay"
+description = "The Matrix relay: posts the daily digest and passes replies to Claude on the server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "konter-relay"
+path = "src/main.rs"
+
+[dependencies]
+konter-repo.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+matrix-sdk = { version = "0.19.1", features = ["bundled-sqlite", "markdown"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "sync"] }

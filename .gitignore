@@ -8,3 +8,7 @@
 # `just setup` adds the same to .git/info/exclude and jj's snapshot.auto-track.
 /books/
 /human_notes/
+# A clone's own Claude instructions and settings (on the server, links into
+# the books' server/ folder: `just more setup-server`).
+/CLAUDE.local.md
+/.claude/settings.local.json

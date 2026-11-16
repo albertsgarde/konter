@@ -27,6 +27,7 @@ These decide most questions not answered below.
 | `konter-diagnostics` | `gaps`, `suggest`, `coverage` on a finished build, as text (and the gaps page's body as HTML) | none |
 | `konter-report` | the site in `build/`: its shared frame and navigation, and the spending and income pages, read from the books | writes `build/`; doesn't depend on the engine |
 | `konter` | the CLI; connects the others | yes |
+| `konter-relay` | the server's Matrix relay ([server.md](server.md)): leaves the daily digest in an outbox, posts it, and hands replies to Claude in the server's clone. Not part of `konter`, and not in its build | yes |
 
 The engine has no IO so that everything it does can be tested from text, and so that reading, writing and fetching are all in one place. The report depends only on the books, so it can't come to depend on how they're made: it reads them as its own `Transaction` type, which `konter` fills from the build. Code that makes or checks the books goes in the engine (or in `konter-repo` if it touches disk or network). Code that reads the books goes in the report. The gaps page needs the build, not just the books, so its body is made in `konter-diagnostics` and only put in the site's frame by `konter-report`.
 

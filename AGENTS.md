@@ -5,7 +5,7 @@
 This repo is the tool, `konter`, and it's public. The books it works on are a separate, private repo in `books/`, which this repo ignores:
 
 ```
-./          the tool: crates/, docs/, justfile, more.just
+./          the tool: crates/, docs/, justfile, more.just, server/
 books/      the books: config/, data/, ledger/
 ```
 
@@ -13,14 +13,18 @@ books/      the books: config/, data/, ledger/
 - **Never let anything from `books/` or `human_notes/` into this repo**, not even in a commit message: this repo is public. `just setup` sets up the guards (ignore rules, jj's `snapshot.auto-track`, a git pre-commit hook), and the recipes refuse to run until it has.
 - **jj acts on the nearest repo.** From this directory, use `jj -R books …` for the books and plain `jj` for the tool, rather than relying on the shell's current directory. With `-R`, paths are still relative to the current directory: `jj -R books diff books/ledger`, not `ledger`.
 - **The recipes run on `books/`** (or `$KONTER_BOOKS`) with the tool's working copy: `just more build`, `just more konter <subcommand>`. A bare `cargo run -- <subcommand>` from here finds no books; add `--root books`.
+- **`crates/relay` is the server's Matrix bot** ([docs/server.md](docs/server.md)), with `server/` holding its systemd units, the Claude settings and the push guard. It isn't a default member, so plain `cargo build` and `cargo test` skip it and its many dependencies: use `-p konter-relay`, or `--workspace`.
 - A change to the tool shows up in the books on the next run. Commit the tool change here and the books' change in `books/`, each with its own message.
 - **The books are pinned to a tool commit** in `books/pin/`. `just pinned <recipe>` runs with that tool, and `just pin` moves the pin ([docs/usage.md](docs/usage.md)). When the books start to need a tool change, move the pin and commit `books/pin/` with the books' change.
 - Plans and design history live with the books too, if they have any (mine: `books/PLAN.md` and `books/docs/plans/`).
 
 ## Version control
 I use JJ for version control with a git backend, in both repos.
-You can create new revisions on top of the one I asked you to work on (by splitting, see below) and add descriptions to those, but never change existing commits other than the one I tell you to work on, unless that is very explicitly requested.
+You can and should create new revisions on top of the one I asked you to work on (by splitting, see below) and add descriptions to those, but never change existing commits other than the one I tell you to work on, unless that is very explicitly requested.
+The exception is a commit you just created.
+You can assume others don't touch it (because you won't touch their's), but only change it by squashing things from the current commit.
 _NEVER_ push anything to git, though you are welcome to fetch using `jj git fetch`.
+
 
 ### Other agents work here at the same time
 Several agents often run in this project at once, in the same working copies (later maybe in separate jj workspaces). Respect each other's work, and expect things to change around you. All of this applies in both repos:

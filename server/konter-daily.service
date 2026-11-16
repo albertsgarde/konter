@@ -1,0 +1,12 @@
+# The daily run (docs/server.md): fetch, build, commit and push the books'
+# auto bookmark, and leave the digest for the relay. Started by
+# konter-daily.timer.
+[Unit]
+Description=konter's daily fetch and digest
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.nix-profile/bin/konter-relay daily
+Environment=PATH=%h/.nix-profile/bin:/nix/var/nix/profiles/default/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin

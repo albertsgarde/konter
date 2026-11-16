@@ -1,0 +1,18 @@
+# konter's Matrix relay (docs/server.md): posts the digest, passes replies to
+# Claude. A systemd user unit: copy to ~/.config/systemd/user/, then
+#   systemctl --user enable --now konter-relay
+[Unit]
+Description=konter's Matrix relay
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=%h/.nix-profile/bin/konter-relay run
+Restart=on-failure
+RestartSec=30
+# konter-relay from `nix profile install .#relay`; Nix, Claude Code and jj
+# wherever they are installed.
+Environment=PATH=%h/.nix-profile/bin:/nix/var/nix/profiles/default/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

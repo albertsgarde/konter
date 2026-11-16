@@ -1,0 +1,18 @@
+# konter-relay's config: ~/.config/konter/relay.toml (or $KONTER_CONFIG_DIR).
+# It holds the bot's password until the first login, so keep it at 0600.
+
+homeserver = "https://matrix.example.org"
+user = "@konter-bot:example.org"
+# Only for the first login; the session is kept in the state folder after it.
+password = "…"
+# The one Matrix ID the bot listens to, and the encrypted room it uses.
+owner = "@you:example.org"
+room = "!roomid:example.org"
+# The server's clone of konter, with the books in books/.
+clone = "~/konter"
+
+# The defaults:
+# daily = "just pinned more daily"
+# digest = "just pinned more konter digest"
+# claude = "claude"
+# state = "~/.local/state/konter-relay"

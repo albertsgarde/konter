@@ -44,7 +44,7 @@ The tool and the books are two repos. This one is the tool; the books (bank data
 3. Run `just setup` once. It puts in place the guards that keep `books/` out of this repo's history: `.git/info/exclude`, jj's `snapshot.auto-track`, and a git pre-commit hook. The recipes refuse to run until it has. If there's no `books/`, it then makes new, empty books there with `konter init`.
 4. `just` lists the daily recipes and `just more` the rest. They run the tool's working copy on the books.
 
-[docs/fetching.md](docs/fetching.md) says how to get bank data, [docs/usage.md](docs/usage.md) how to use the tool, and [docs/rules.md](docs/rules.md) how to write rules.
+[docs/fetching.md](docs/fetching.md) says how to get bank data, [docs/usage.md](docs/usage.md) how to use the tool, [docs/rules.md](docs/rules.md) how to write rules, and [docs/server.md](docs/server.md) how to have a server keep the books up to date, mapped over Matrix.
 
 ## Licence
 Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT licence](LICENSE-MIT), at your option. Unless you say otherwise, any contribution you submit for inclusion in this work, as defined in the Apache-2.0 licence, is dual licensed as above, without any additional terms or conditions.

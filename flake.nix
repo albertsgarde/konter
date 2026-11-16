@@ -59,11 +59,26 @@
               meta.mainProgram = "konter";
             }
           );
+          # The Matrix relay for the server (docs/server.md). Its dependencies
+          # are many, so they're built apart from konter's, and only when
+          # it's asked for.
+          relayArgs = common // {
+            pname = "konter-relay";
+            cargoExtraArgs = "--locked -p konter-relay";
+          };
+          relay = craneLib.buildPackage (
+            relayArgs
+            // {
+              cargoArtifacts = craneLib.buildDepsOnly relayArgs;
+              doCheck = false;
+              meta.mainProgram = "konter-relay";
+            }
+          );
         in
         {
           packages = {
             default = konter;
-            inherit konter;
+            inherit konter relay;
             # The hledger `konter verify` is checked against: nixpkgs' as it is,
             # so `nix flake update nixpkgs` is how it moves.
             hledger = pkgs.hledger;

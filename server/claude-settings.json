@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(books/config/rules/**)",
+      "Edit(books/config/accounts.toml)",
+      "Bash(just pinned more auto-start)",
+      "Bash(just pinned more auto-push:*)",
+      "Bash(just pinned more konter:*)",
+      "Bash(just pinned more build:*)",
+      "Bash(just pinned more check:*)",
+      "Bash(just pinned more gaps:*)",
+      "Bash(just pinned more coverage:*)",
+      "Bash(just pinned more subs:*)",
+      "Bash(jj -R books status)",
+      "Bash(jj -R books st)",
+      "Bash(jj -R books diff:*)",
+      "Bash(jj -R books log:*)",
+      "Bash(jj -R books show:*)"
+    ],
+    "deny": [
+      "Edit(books/data/**)",
+      "Edit(books/ledger/**)",
+      "Bash(git push:*)",
+      "Bash(jj git push:*)",
+      "Bash(jj -R books git push:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/server/guard-jj"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -23,7 +23,7 @@ What the tool does and why is in [spec.md](spec.md), and getting bank data in [f
 
 ## The pinned tool
 
-The recipes run the tool's working copy, so a change to the tool shows up in the books on the next run. The books also record which tool builds them, in `pin/`: a small Nix flake whose `flake.lock` holds the exact commit of `konter`, which in turn decides the hledger. `just pinned <recipe> [args]` runs any recipe with that `konter` and hledger instead (`just pinned fetch`), as the server's daily run does, so it never depends on half-finished work on the tool.
+The recipes run the tool's working copy, so a change to the tool shows up in the books on the next run. The books also record which tool builds them, in `pin/`: a small Nix flake whose `flake.lock` holds the exact commit of `konter`, which in turn decides the hledger. `just pinned <recipe> [args]` runs any recipe with that `konter` and hledger instead (`just pinned fetch`), as the server's daily run does ([server.md](server.md)), so it never depends on half-finished work on the tool.
 
 - `just pin [rev]` moves the pin to a commit of the tool: by default the last one (`@-`), or `main` for GitHub's newest. A commit that isn't on GitHub yet gives a local pin, which works only on this machine; run `just pin <commit>` again once it's pushed, and it becomes a GitHub pin with an identical build.
 - Move the pin when the books start to depend on something new in the tool, and commit `pin/` with that change. Before moving it, build with the new tool and check that `jj diff ledger/` is empty, unless the change was meant to alter the books.

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# A Claude Code PreToolUse hook for the server's clone (docs/server.md): the
+# second line of defence behind jj's immutable pushed commits. It blocks any
+# Bash command that
+# - overrides immutability (--ignore-immutable), or
+# - pushes anything but the auto bookmark: every push has to be exactly
+#   `[jj [-R <repo>]] git push --bookmark auto` (or -b auto), so no --all,
+#   --deleted, --tracked, --change, main, or plain git push.
+# The recipes (`just more auto-push`, `just more daily`) push that way.
+#
+# Reads the hook's JSON on stdin; exit 2 blocks the command and tells Claude why.
+set -euo pipefail
+
+command=$(jq -r '.tool_input.command // empty')
+
+block() {
+    echo "Blocked by server/guard-jj: $1. Commit and push with \`just pinned more auto-push '<message>'\`." >&2
+    exit 2
+}
+
+if grep -q -- '--ignore-immutable' <<< "$command"; then
+    block "commits that are pushed stay as they are (--ignore-immutable)"
+fi
+
+# Each simple command on its own: split on ;, &, | and newlines.
+while IFS= read -r part; do
+    part=$(sed -E 's/^[[:space:]]+|[[:space:]]+$//g' <<< "$part")
+    if grep -qE '(^|[[:space:]])git([[:space:]].*)?[[:space:]]push([[:space:]]|$)' <<< "$part" \
+        && ! grep -qE '^jj( -R [^[:space:]]+)? git push (--bookmark|-b) auto( --quiet)?$' <<< "$part"; then
+        block "only the auto bookmark is pushed, and only with \`jj git push --bookmark auto\` (not: $part)"
+    fi
+done < <(tr ';&|' '\n\n\n' <<< "$command")
+exit 0
