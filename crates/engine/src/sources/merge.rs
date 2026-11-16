@@ -167,11 +167,66 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
         file.rows.retain(|t| t.booked >= start && in_window(format, t.booked, cutover));
         snapshots.extend(file.snapshots.iter().filter(|s| s.date >= start).cloned());
     }
-    snapshots.sort_by_key(|s| (s.date, s.file.clone()));
+    snapshots.sort_by(|a, b| (a.date, &a.file).cmp(&(b.date, &b.file)));
 
     let formats: BTreeSet<Format> = files.iter().filter(|f| !f.rows.is_empty()).map(|f| f.format).collect();
 
-    // 1. Deduplicate.
+    let Union { txs: union, per_file, mut conflicts } = deduplicate(files);
+    conflicts.extend(missing(&union, &per_file));
+    if !conflicts.is_empty() {
+        let d =
+            findings.error("overlap conflict", format!("{name}: files disagree on {} transactions", conflicts.len()));
+        for c in conflicts {
+            d.detail(c);
+        }
+        if formats.len() > 1 && cutover.is_none() {
+            d.detail(format!(
+                "→ {name} has data in several formats; without running balances they can't be matched up. \
+                 Set `cutover` for it in config/sources.toml (see docs/fetching.md)"
+            ));
+        }
+    }
+
+    let (occurrences, mut txs): (Vec<u32>, Vec<BankTransaction>) =
+        union.into_iter().map(|(key, t)| (key.occurrence(), t)).unzip();
+    let has_running_balance = !txs.is_empty() && txs.iter().all(|t| t.balance_after.is_some());
+    let mut chain_ok = true;
+    if has_running_balance {
+        (txs, chain_ok) = in_chain_order(name, txs, &occurrences, findings);
+    } else {
+        txs.sort_by_key(|t| (t.booked, t.time, t.order_hint));
+    }
+    assign_ids(name, source.id_prefix.as_deref().unwrap_or_default(), &mut txs, findings);
+
+    let opening = if has_running_balance {
+        txs.first().and_then(|t| t.balance_before())
+    } else {
+        // Work back from the latest snapshot.
+        snapshots
+            .last()
+            .map(|s| s.balance - txs.iter().filter(|t| t.booked <= s.date).map(|t| t.amount).sum::<Decimal>())
+    };
+    SourceData {
+        txs,
+        has_running_balance,
+        opening,
+        snapshots,
+        files: per_file.into_iter().map(|(s, _)| s).collect(),
+        chain_ok,
+    }
+}
+
+/// Every transaction in a source's files, once.
+struct Union {
+    txs: BTreeMap<Key, BankTransaction>,
+    /// Each file's summary, and which transactions it has.
+    per_file: Vec<(FileSummary, BTreeSet<Key>)>,
+    /// Where copies of a transaction disagree.
+    conflicts: Vec<String>,
+}
+
+/// Step 1: one copy of each transaction, from files sorted by path.
+fn deduplicate(files: Vec<RawFile>) -> Union {
     let mut union: BTreeMap<Key, BankTransaction> = BTreeMap::new();
     // A bank reference identifies a transaction across formats too (Lunar's
     // CSV "Transaction ID" is its API entry_reference).
@@ -233,25 +288,7 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
                     } else {
                         existing.order_hint
                     };
-                    let diffs = differences(existing, &row);
-                    if !diffs.is_empty() && existing.origins.iter().any(|o| o.file == file.rel) {
-                        conflicts.push(format!(
-                            "{}: {} uses its bank reference {} again for {}: {}",
-                            short(existing),
-                            file.rel,
-                            row.bank_ref.as_deref().unwrap_or("?"),
-                            short(&row),
-                            diffs.join("; ")
-                        ));
-                    } else if !diffs.is_empty() {
-                        conflicts.push(format!(
-                            "{}: {} vs {}: {}",
-                            short(existing),
-                            existing.origin().file,
-                            file.rel,
-                            diffs.join("; ")
-                        ));
-                    }
+                    conflicts.extend(disagreement(existing, &row, &file.rel));
                     if existing.balance_after.is_none() && row.balance_after.is_some() {
                         // Prefer the copy with a running balance.
                         let earlier = std::mem::take(&mut existing.origins);
@@ -270,57 +307,75 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
         }
         per_file.push((summary, keys));
     }
+    Union { txs: union, per_file, conflicts }
+}
 
-    // 2. Missing from a file that covers the date. A file's first and last day
-    // may be partial (export taken mid-day), so only days strictly inside count.
-    for (summary, keys) in &per_file {
+/// What `row`, in the file `rel`, says differently from the copy of the same
+/// transaction that's already there, if anything.
+fn disagreement(existing: &BankTransaction, row: &BankTransaction, rel: &str) -> Option<String> {
+    let diffs = differences(existing, row);
+    if diffs.is_empty() {
+        return None;
+    }
+    Some(if existing.origins.iter().any(|o| o.file == rel) {
+        format!(
+            "{}: {} uses its bank reference {} again for {}: {}",
+            short(existing),
+            rel,
+            row.bank_ref.as_deref().unwrap_or("?"),
+            short(row),
+            diffs.join("; ")
+        )
+    } else {
+        format!("{}: {} vs {}: {}", short(existing), existing.origin().file, rel, diffs.join("; "))
+    })
+}
+
+/// Step 2: transactions missing from a file that covers their date. A file's
+/// first and last day may be partial (export taken mid-day), so only days
+/// strictly inside count.
+fn missing(union: &BTreeMap<Key, BankTransaction>, per_file: &[(FileSummary, BTreeSet<Key>)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (summary, keys) in per_file {
         let (Some(first), Some(last)) = (summary.first, summary.last) else {
             continue;
         };
-        for (key, t) in &union {
+        for (key, t) in union {
             if first < t.booked && t.booked < last && !keys.contains(key) {
-                conflicts.push(format!("{} (from {}) is missing from {}", short(t), t.origin().file, summary.rel));
+                out.push(format!("{} (from {}) is missing from {}", short(t), t.origin().file, summary.rel));
             }
         }
     }
-    if !conflicts.is_empty() {
-        let d =
-            findings.error("overlap conflict", format!("{name}: files disagree on {} transactions", conflicts.len()));
-        for c in conflicts {
-            d.detail(c);
-        }
-        if formats.len() > 1 && cutover.is_none() {
-            d.detail(format!(
-                "→ {name} has data in several formats; without running balances they can't be matched up. \
-                 Set `cutover` for it in config/sources.toml (see docs/fetching.md)"
-            ));
+    out
+}
+
+/// Step 3, for transactions that all have a running balance: puts them in the
+/// order the balance chains in, and reports where it doesn't. `occurrences`:
+/// see [`chain`]. Returns them with whether the chain is unbroken.
+fn in_chain_order(
+    name: &str,
+    txs: Vec<BankTransaction>,
+    occurrences: &[u32],
+    findings: &mut Findings,
+) -> (Vec<BankTransaction>, bool) {
+    let (order, breaks) = chain(&txs, occurrences);
+    let mut txs: Vec<Option<BankTransaction>> = txs.into_iter().map(Some).collect();
+    let ordered = order.into_iter().map(|i| txs[i].take().expect("the chain has every transaction once")).collect();
+    let chain_ok = breaks.is_empty();
+    if !chain_ok {
+        let d = findings.error("balance chain", format!("{name}: running balance breaks {} times", breaks.len()));
+        for b in breaks {
+            d.detail(b);
         }
     }
+    (ordered, chain_ok)
+}
 
-    // 3. Order.
-    let (occurrences, mut txs): (Vec<u32>, Vec<BankTransaction>) =
-        union.into_iter().map(|(key, t)| (key.occurrence(), t)).unzip();
-    let has_running_balance = !txs.is_empty() && txs.iter().all(|t| t.balance_after.is_some());
-    let mut chain_ok = true;
-    if has_running_balance {
-        let (ordered, breaks) = chain(&txs, &occurrences);
-        txs = ordered.into_iter().map(|i| txs[i].clone()).collect();
-        if !breaks.is_empty() {
-            chain_ok = false;
-            let d = findings.error("balance chain", format!("{name}: running balance breaks {} times", breaks.len()));
-            for b in breaks {
-                d.detail(b);
-            }
-        }
-    } else {
-        txs.sort_by_key(|t| (t.booked, t.time, t.order_hint));
-    }
-
-    // 4. IDs.
-    let prefix = source.id_prefix.clone().unwrap_or_default();
+/// Step 4: gives each transaction, in order, its ID (docs/spec.md §4).
+fn assign_ids(name: &str, prefix: &str, txs: &mut [BankTransaction], findings: &mut Findings) {
     let mut occurrences: BTreeMap<(Date, Decimal, Option<Decimal>, String), u32> = BTreeMap::new();
     let mut seen = BTreeSet::new();
-    for t in &mut txs {
+    for t in txs {
         let scheme = scheme_of(t);
         let text_part = if scheme == Scheme::Text { t.description.clone() } else { String::new() };
         let n = occurrences.entry((t.booked, t.amount, t.balance_after, text_part)).or_insert(0);
@@ -339,23 +394,6 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
         if !seen.insert(t.id.clone()) {
             findings.error("ids", format!("{name}: duplicate transaction ID {} (hash collision)", t.id));
         }
-    }
-
-    let opening = if has_running_balance {
-        txs.first().and_then(|t| t.balance_before())
-    } else {
-        // Work back from the latest snapshot.
-        snapshots
-            .last()
-            .map(|s| s.balance - txs.iter().filter(|t| t.booked <= s.date).map(|t| t.amount).sum::<Decimal>())
-    };
-    SourceData {
-        txs,
-        has_running_balance,
-        opening,
-        snapshots,
-        files: per_file.into_iter().map(|(s, _)| s).collect(),
-        chain_ok,
     }
 }
 
@@ -376,11 +414,11 @@ fn chain(txs: &[BankTransaction], occurrences: &[u32]) -> (Vec<usize>, Vec<Strin
     let mut breaks = Vec::new();
     let mut current: Option<(Date, Decimal)> = None;
     for (k, (day, idxs)) in days.iter().enumerate() {
-        let (day, idxs) = (*day, idxs.clone());
-        let day_order = match current.and_then(|(_, b)| chain_day(txs, &idxs, Some(b), None)) {
+        let day = *day;
+        let day_order = match current.and_then(|(_, b)| chain_day(txs, idxs, Some(b), None)) {
             Some(o) => o,
             None => {
-                let own = chain_day_unanchored(txs, &idxs, days.get(k + 1).map(|(_, next)| next.as_slice()));
+                let own = chain_day_unanchored(txs, idxs, days.get(k + 1).map(|(_, next)| next.as_slice()));
                 match (&own, current) {
                     (Some(o), Some((prev_day, b))) => {
                         let starts = txs[o[0]].balance_before().unwrap();
@@ -395,7 +433,7 @@ fn chain(txs: &[BankTransaction], occurrences: &[u32]) -> (Vec<usize>, Vec<Strin
                     (Some(_), None) => {}
                     (None, _) => breaks.push(format!("on {day}: the day's transactions don't form a chain")),
                 }
-                own.unwrap_or(idxs)
+                own.unwrap_or_else(|| idxs.clone())
             }
         };
         current = Some((day, txs[*day_order.last().unwrap()].balance_after.unwrap()));
