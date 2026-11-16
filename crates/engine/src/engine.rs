@@ -102,7 +102,9 @@ fn header(t: &BankTransaction, rule: &str, seq: usize, output: Option<&Output>) 
     // number gives way to the counterparty's name.
     let payee = output.and_then(|o| o.payee.clone()).or_else(|| name_instead(t).map(str::to_string));
     if payee.as_ref().is_some_and(|p| *p != t.description) {
-        comments.push(format!("bank: {:?}", t.description));
+        // Quoted as JSON: the report reads it back.
+        let quoted = serde_json::to_string(&t.description).expect("a string is JSON");
+        comments.push(format!("bank: {quoted}"));
     }
     if let Some(o) = output {
         tags.extend(o.tags.iter().cloned());
@@ -724,5 +726,21 @@ mod tests {
         let tx = header(&card_payment("COOP APP", Some("COOP")), "unmatched", 0, None);
         assert_eq!(tx.description, "COOP APP");
         assert!(tx.comments.is_empty());
+    }
+
+    /// The report gets the bank's text from the comment, as a JSON string.
+    /// Rust's own quoting (`{:?}`) isn't JSON: it writes a non-breaking space
+    /// as `\u{a0}`, which no JSON parser reads.
+    #[test]
+    fn the_banks_text_is_kept_as_json() {
+        let text = "1234 \u{a0}\"quoted\" back\\slash e\u{301}";
+        let mut t = card_payment(text, None);
+        t.counterparty_name = Some("SHOP".into());
+        let output =
+            Output { payee: Some("Shop".into()), note: None, tags: Vec::new(), action: Action::Ignore("".into()) };
+        let tx = header(&t, "shop", 0, Some(&output));
+        let [comment] = &tx.comments[..] else { panic!("{:?}", tx.comments) };
+        let quoted = comment.strip_prefix("bank: ").unwrap();
+        assert_eq!(serde_json::from_str::<String>(quoted).unwrap(), text);
     }
 }
