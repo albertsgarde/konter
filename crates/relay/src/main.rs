@@ -15,9 +15,10 @@
 
 use std::fs::File;
 use std::io::{Read as _, Write as _};
+use std::net::{TcpStream, ToSocketAddrs as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -74,6 +75,11 @@ struct Config {
     /// The Claude Code command.
     #[serde(default = "default_claude")]
     claude: String,
+    /// What the daily run waits to reach (host:port) before it starts, so a
+    /// machine that has just woken up doesn't report a failed fetch. Empty:
+    /// don't wait.
+    #[serde(default = "default_wait_for")]
+    wait_for: Vec<String>,
     /// Where the relay keeps its session, store, outbox and lock (default:
     /// $XDG_STATE_HOME/konter-relay, or ~/.local/state/konter-relay).
     state: Option<PathBuf>,
@@ -89,6 +95,10 @@ fn default_digest() -> String {
 
 fn default_claude() -> String {
     "claude".into()
+}
+
+fn default_wait_for() -> Vec<String> {
+    vec!["api.enablebanking.com:443".into()]
 }
 
 impl Config {
@@ -223,7 +233,43 @@ fn last_lines(text: &str, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
+/// How long the daily run waits for the network before running anyway.
+const WAIT_ONLINE: Duration = Duration::from_secs(30 * 60);
+
+/// Wait until every address takes a connection, for at most `limit`. Returns
+/// whether they all did.
+fn wait_online(addrs: &[String], limit: Duration) -> bool {
+    let start = Instant::now();
+    let mut said = false;
+    loop {
+        let offline: Vec<&String> = addrs.iter().filter(|addr| !reachable(addr)).collect();
+        if offline.is_empty() {
+            return true;
+        }
+        if start.elapsed() >= limit {
+            return false;
+        }
+        if !said {
+            let offline: Vec<&str> = offline.iter().map(|addr| addr.as_str()).collect();
+            eprintln!("Waiting to reach {}.", offline.join(", "));
+            said = true;
+        }
+        std::thread::sleep(Duration::from_secs(15));
+    }
+}
+
+/// Whether `addr` (host:port) resolves and takes a TCP connection.
+fn reachable(addr: &str) -> bool {
+    addr.to_socket_addrs()
+        .map(|mut found| found.any(|addr| TcpStream::connect_timeout(&addr, Duration::from_secs(10)).is_ok()))
+        .unwrap_or(false)
+}
+
 fn daily(config: &Config) -> Result<()> {
+    // Before the lock, so the relay can answer while this waits.
+    if !wait_online(&config.wait_for, WAIT_ONLINE) {
+        eprintln!("Still offline after {} minutes; running anyway.", WAIT_ONLINE.as_secs() / 60);
+    }
     let _lock = lock(config)?;
     let mut text = String::new();
     let (ok, out, err) = shell(config, &config.daily)?;
@@ -521,6 +567,19 @@ mod tests {
         assert_eq!(config.daily, "just pinned more daily");
         assert_eq!(config.digest, "just pinned more konter digest");
         assert!(config.password.is_none());
+        assert_eq!(config.wait_for, ["api.enablebanking.com:443"]);
+    }
+
+    #[test]
+    fn waits_for_the_network() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let open = listener.local_addr().unwrap().to_string();
+        assert!(wait_online(std::slice::from_ref(&open), Duration::ZERO));
+        assert!(wait_online(&[], Duration::ZERO));
+        drop(listener);
+        // Nothing listens there now, and a zero limit gives up at once.
+        assert!(!wait_online(&[open], Duration::ZERO));
+        assert!(!wait_online(&["no-such-host.invalid:443".into()], Duration::ZERO));
     }
 
     #[test]

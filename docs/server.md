@@ -54,7 +54,7 @@ The server pushes without asking, so what it may push is fenced in from several 
    systemctl --user enable --now konter-relay konter-daily.timer
    loginctl enable-linger "$USER"     # so they run without you logged in
    ```
-   The timer runs at 06:00. `journalctl --user -u konter-relay -u konter-daily` shows what they did.
+   The timer runs at 06:00, or as soon as the machine is on again if it was off or asleep then, so a machine that isn't always on gets its daily run too (without lingering, only while you're logged in). The daily run first waits, for up to 30 minutes, until it can reach Enable Banking (`wait_for` in `relay.toml`), so it doesn't report a failed fetch just because the network isn't back yet. `journalctl --user -u konter-relay -u konter-daily` shows what they did.
 
 To start over with the bot (a new device, say), stop it and remove `~/.local/state/konter-relay/`: the session and its encryption keys are there, and are no use without each other.
 

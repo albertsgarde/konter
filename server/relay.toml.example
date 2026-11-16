@@ -15,4 +15,7 @@ clone = "~/konter"
 # daily = "just pinned more daily"
 # digest = "just pinned more konter digest"
 # claude = "claude"
+# Before fetching, the daily run waits (up to 30 minutes) until it can reach
+# these, so a machine that has just woken up doesn't report a failed fetch.
+# wait_for = ["api.enablebanking.com:443"]
 # state = "~/.local/state/konter-relay"
