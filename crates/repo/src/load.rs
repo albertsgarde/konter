@@ -52,9 +52,14 @@ pub fn raw_file(repo: &Repo, config: &Config, name: &str, rel: &str) -> Result<R
 
 /// Parses and merges the raw files of one imported source.
 pub fn source(repo: &Repo, config: &Config, name: &str, findings: &mut Findings) -> Result<SourceData> {
-    let rels = manifest::raw_files(repo)?;
+    Ok(source_among(repo, config, name, &manifest::raw_files(repo)?, findings))
+}
+
+/// Parses and merges the raw files of one imported source, picked from `rels`:
+/// every raw file there is.
+fn source_among(repo: &Repo, config: &Config, name: &str, rels: &[String], findings: &mut Findings) -> SourceData {
     let mut raw = Vec::new();
-    for rel in sources::files_of(config, name, &rels) {
+    for rel in sources::files_of(config, name, rels) {
         match raw_file(repo, config, name, rel) {
             Ok(file) => raw.push(file),
             Err(e) => {
@@ -62,7 +67,7 @@ pub fn source(repo: &Repo, config: &Config, name: &str, findings: &mut Findings)
             }
         }
     }
-    Ok(sources::merge_source(config, name, raw, findings))
+    sources::merge_source(config, name, raw, findings)
 }
 
 /// Verifies the manifest, parses every raw file and merges each source.
@@ -76,7 +81,7 @@ pub fn all_sources(repo: &Repo, config: &Config, findings: &mut Findings) -> Res
     let mut loaded = Loaded { sources: Default::default() };
     for (name, source_config) in &config.sources {
         if source_config.imported() {
-            loaded.sources.insert(name.clone(), source(repo, config, name, findings)?);
+            loaded.sources.insert(name.clone(), source_among(repo, config, name, &rels, findings));
         }
     }
     Ok(loaded)
