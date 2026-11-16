@@ -42,10 +42,7 @@ pub fn pair(legs: &[Leg], window: i64) -> (Vec<(usize, usize)>, Vec<usize>) {
                     && b.amount == -a.amount
                     && days_between(a.date, b.date) <= window
             })
-            .min_by(|&x, &y| {
-                let key = |j: usize| (days_between(a.date, legs[j].date), legs[j].date, legs[j].id.clone());
-                key(x).cmp(&key(y))
-            });
+            .min_by_key(|&j| (days_between(a.date, legs[j].date), legs[j].date, legs[j].id.as_str()));
         if let Some(j) = best {
             used[i] = true;
             used[j] = true;
