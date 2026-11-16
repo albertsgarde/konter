@@ -886,6 +886,12 @@ fn source_for_iban<'a>(config: &'a Config, bank: &str, iban: &str) -> Option<&'a
 }
 
 fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<Date>) -> Result<ExitCode> {
+    if let Some(only) = &only {
+        let source = config.sources.get(only).with_context(|| format!("unknown source {only}"))?;
+        if !source.formats.contains(&Format::EnableBanking) {
+            bail!("{only} isn't fetched: it has no \"enable-banking\" in its formats in config/sources.toml");
+        }
+    }
     let settings = fetch::Settings::load()?;
     let sessions = fetch::Sessions::load()?;
     let client = fetch::Client::new(&settings)?;
@@ -914,24 +920,15 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<Da
             findings.error("fetch", format!("{name}: no linked account matches its number/IBAN"));
             continue;
         };
+        // The earlier fetches. Their rows may be represented by CSV copies
+        // after merging, so look at the files.
+        let existing = load::source(repo, config, name, &mut Findings::default())?;
+        let fetches = || existing.files.iter().filter(|f| f.rel.ends_with(".json"));
         // Overlap the previous fetch by 30 days, so a re-fetch can be checked.
-        let date_from = match from {
-            Some(d) => d,
-            None => {
-                let mut quiet = Findings::default();
-                let existing = load::source(repo, config, name, &mut quiet)?;
-                // The last transaction in earlier fetches (their rows may be
-                // represented by CSV copies after merging, so look at the files).
-                existing
-                    .files
-                    .iter()
-                    .filter(|f| f.rel.ends_with(".json"))
-                    .filter_map(|f| f.last)
-                    .max()
-                    .map(|d| d.saturating_sub(jiff::Span::new().days(30)))
-                    .unwrap_or_else(|| config.source_start(source))
-            }
-        };
+        let date_from = from.unwrap_or_else(|| {
+            let last = fetches().filter_map(|f| f.last).max();
+            last.map_or_else(|| config.source_start(source), |d| d.saturating_sub(jiff::Span::new().days(30)))
+        });
         writeln!(Stdout, "{name}: fetching from {date_from} …")?;
         let (pages, date_from) = client.transaction_pages(&account.uid, &date_from.to_string())?;
         let balances = client.balances(&account.uid)?;
@@ -951,13 +948,7 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<Da
         let unreferenced = booked_refs_missing(&doc);
         // ...unless the last stored fetch is old: storing one now and then
         // records how far the data reaches, even for a quiet account.
-        let mut quiet = Findings::default();
-        let last_fetch = load::source(repo, config, name, &mut quiet)?
-            .files
-            .iter()
-            .filter(|f| f.rel.ends_with(".json"))
-            .filter_map(|f| f.exported)
-            .max();
+        let last_fetch = fetches().filter_map(|f| f.exported).max();
         let recent = last_fetch.is_some_and(|d| konter_engine::transfers::days_between(today(), d) <= 30);
         if new == 0 && unreferenced == 0 && recent {
             writeln!(Stdout, "  nothing new")?;
