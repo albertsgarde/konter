@@ -11,6 +11,7 @@ use crate::model::{BankTransaction, LedgerTransaction, Posting, Provenance, name
 use crate::money::fmt_num;
 use crate::rules::{Action, AmountSpec, BANK, Output, Rules};
 use crate::sources::Loaded;
+use crate::tags;
 use crate::transfers::{self, Leg};
 
 pub const TRANSFERS: &str = "assets:transfers";
@@ -38,6 +39,14 @@ pub enum Status {
     },
 }
 
+impl Status {
+    /// Whether a rule or a pin booked it. Anything else is in the fallback
+    /// account: unmatched, marked later, ambiguous or invalid.
+    pub fn is_mapped(&self) -> bool {
+        matches!(self, Status::Rule(_) | Status::Pin)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Outcome {
     pub status: Status,
@@ -60,9 +69,15 @@ pub struct Generated {
     pub tool_accounts: BTreeSet<String>,
 }
 
+/// Where a source's transactions go until they're mapped.
 pub fn fallback_account(source: &str, amount: Decimal) -> String {
     let kind = if amount > Decimal::ZERO { "income" } else { "expenses" };
     format!("{kind}:unmatched:{source}")
+}
+
+/// Whether `account` is some source's fallback account.
+pub fn is_fallback_account(account: &str) -> bool {
+    account.contains(":unmatched:")
 }
 
 fn bank_posting(config: &Config, t: &BankTransaction) -> Posting {
@@ -73,14 +88,14 @@ fn bank_posting(config: &Config, t: &BankTransaction) -> Posting {
 }
 
 fn header(t: &BankTransaction, rule: &str, seq: usize, output: Option<&Output>) -> LedgerTransaction {
-    let mut tags = vec![("bank-id".to_string(), t.id.clone()), ("rule".to_string(), rule.to_string())];
+    let mut tags = vec![(tags::BANK_ID.to_string(), t.id.clone()), (tags::RULE.to_string(), rule.to_string())];
     if let Some(d) = t.transaction_date.filter(|d| *d != t.booked) {
-        tags.push(("purchased".into(), d.to_string()));
+        tags.push((tags::PURCHASED.into(), d.to_string()));
     }
     // Foreign-currency purchases stay in the account's currency; the original
     // amount is kept as a tag so reports don't mix currencies.
     if let (Some(a), Some(c)) = (t.original_amount, &t.original_currency) {
-        tags.push(("original".into(), format!("{} {c}", fmt_num(a))));
+        tags.push((tags::ORIGINAL.into(), format!("{} {c}", fmt_num(a))));
     }
     let mut comments = Vec::new();
     // Without a payee from the rule, a description that's only a reference
@@ -172,7 +187,7 @@ fn apply(
                 tx.comments.push(format!("{target} before its start ({target_start})"));
             } else if target_source.imported() {
                 tx.postings = vec![bank_posting(config, t), counter(TRANSFERS)];
-                tx.tags.push(("transfer".into(), target.clone()));
+                tx.tags.push((tags::TRANSFER.into(), target.clone()));
                 applied.transfer_to = Some(target.clone());
             } else {
                 tx.postings = vec![bank_posting(config, t), counter(&target_source.ledger)];
@@ -184,7 +199,7 @@ fn apply(
             let mut tx = base();
             let balance_account = sub.balance_account().expect("validated when loading: not a transfer");
             tx.postings = vec![bank_posting(config, t), counter(&balance_account)];
-            tx.tags.push(("subscription".into(), name.clone()));
+            tx.tags.push((tags::SUBSCRIPTION.into(), name.clone()));
             applied.txs.push(tx);
         }
         Action::Unknown(reason) => {
@@ -286,7 +301,7 @@ fn opening_balances(config: &Config, loaded: &Loaded, g: &mut Generated, finding
         g.txs.push(LedgerTransaction {
             date: start,
             description: "Opening balance".into(),
-            tags: vec![("source".into(), name.clone())],
+            tags: vec![(tags::SOURCE.into(), name.clone())],
             comments: Vec::new(),
             postings: vec![bank, Posting::new(OPENING, -opening, config.source_currency(source))],
             provenance: Provenance::Opening,
@@ -352,7 +367,7 @@ fn apply_rules<'a>(
                     if p.account == TRANSFERS
                         || p.account == UNKNOWN_IN
                         || p.account == UNKNOWN_OUT
-                        || p.account.contains(":unmatched:")
+                        || is_fallback_account(&p.account)
                     {
                         g.tool_accounts.insert(p.account.clone());
                     }
@@ -486,7 +501,7 @@ fn balance_snapshots(config: &Config, loaded: &Loaded, g: &mut Generated, findin
             g.txs.push(LedgerTransaction {
                 date: snap.date,
                 description: "Balance reported by the bank".into(),
-                tags: vec![("source".into(), name.clone())],
+                tags: vec![(tags::SOURCE.into(), name.clone())],
                 comments: vec![format!("from {}", snap.file)],
                 postings: vec![check],
                 provenance: Provenance::Assertion,
@@ -501,8 +516,8 @@ fn pair_transfers(config: &Config, loaded: &Loaded, legs: &[Leg], g: &mut Genera
     let window = config.books.transfer_window_days;
     let (pairs, unpaired) = transfers::pair(legs, window);
     for (i, j) in pairs {
-        g.txs[legs[i].ledger_idx].tags.push(("transfer-pair".into(), legs[j].id.clone()));
-        g.txs[legs[j].ledger_idx].tags.push(("transfer-pair".into(), legs[i].id.clone()));
+        g.txs[legs[i].ledger_idx].tags.push((tags::TRANSFER_PAIR.into(), legs[j].id.clone()));
+        g.txs[legs[j].ledger_idx].tags.push((tags::TRANSFER_PAIR.into(), legs[i].id.clone()));
     }
     let (mut inside, mut edge) = (Vec::new(), Vec::new());
     for i in unpaired {
@@ -556,8 +571,7 @@ fn report_outcomes(
         // Ones marked later are as well, but they're acknowledged, so the
         // source's policy is only about the rest.
         let status = |t: &BankTransaction| &g.outcomes[&t.id].status;
-        let open: Vec<&BankTransaction> =
-            data.txs.iter().filter(|t| !matches!(status(t), Status::Rule(_) | Status::Pin)).collect();
+        let open: Vec<&BankTransaction> = data.txs.iter().filter(|t| !status(t).is_mapped()).collect();
         let total: Decimal = data.txs.iter().map(|t| t.amount.abs()).sum();
         let open_amount: Decimal = open.iter().map(|t| t.amount.abs()).sum();
         let pct = if total.is_zero() {

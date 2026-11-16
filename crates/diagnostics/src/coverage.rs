@@ -5,7 +5,6 @@ use std::fmt::Write as _;
 
 use rust_decimal::Decimal;
 
-use konter_engine::engine::Status;
 use konter_engine::pipeline::Build;
 
 /// Per month, the transactions and how many of them, and how much of the
@@ -20,7 +19,7 @@ pub fn coverage(build: &Build, source: Option<&str>) -> String {
         let mut months: BTreeMap<String, (usize, usize, Decimal, Decimal)> = BTreeMap::new();
         for t in &data.txs {
             let m = months.entry(t.booked.strftime("%Y-%m").to_string()).or_default();
-            let mapped = matches!(build.generated.outcomes[&t.id].status, Status::Rule(_) | Status::Pin);
+            let mapped = build.generated.outcomes[&t.id].status.is_mapped();
             m.0 += 1;
             m.2 += t.amount.abs();
             if mapped {

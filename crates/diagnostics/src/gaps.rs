@@ -17,10 +17,11 @@ use rust_decimal::Decimal;
 
 use crate::suggest::{category_hint, group_key};
 use konter_engine::config::{Config, Policy};
-use konter_engine::engine::{Generated, Status, UNKNOWN_IN, UNKNOWN_OUT};
+use konter_engine::engine::{Generated, Status, UNKNOWN_IN, UNKNOWN_OUT, is_fallback_account};
 use konter_engine::model::BankTransaction;
 use konter_engine::model::name_instead;
 use konter_engine::sources::Loaded;
+use konter_engine::tags;
 use konter_engine::transfers::days_between;
 
 mod html;
@@ -116,19 +117,13 @@ pub struct Gaps<'a> {
     pub window: i64,
 }
 
-/// Anything the engine books to the fallback account: unmatched, ambiguous
-/// or invalid.
-pub fn is_unmapped(status: &Status) -> bool {
-    !matches!(status, Status::Rule(_) | Status::Pin)
-}
-
 /// Unmapped transactions that look like one side of a transfer between two of
 /// your accounts: another account has an unmapped transaction with the
 /// opposite amount at most `window` days away. Closest dates pair first.
 /// Returns ID → the other account.
 pub fn own_transfers<'a>(loaded: &'a Loaded, generated: &Generated, window: i64) -> BTreeMap<&'a str, &'a str> {
     let mut txs: Vec<&BankTransaction> =
-        loaded.transactions().filter(|t| is_unmapped(&generated.outcomes[&t.id].status)).collect();
+        loaded.transactions().filter(|t| !generated.outcomes[&t.id].status.is_mapped()).collect();
     txs.sort_by(|a, b| (a.booked, &a.id).cmp(&(b.booked, &b.id)));
     let mut used = vec![false; txs.len()];
     let mut out = BTreeMap::new();
@@ -175,7 +170,7 @@ pub fn gaps<'a>(config: &Config, loaded: &'a Loaded, generated: &Generated, filt
             unmapped: Flow::default(),
         });
         source.txs += 1;
-        if is_unmapped(&outcome.status) {
+        if !outcome.status.is_mapped() {
             source.unmapped.add(t.amount);
             let group = groups.entry((&t.source, group_key(t))).or_insert_with(|| Group {
                 source: &t.source,
@@ -204,9 +199,9 @@ pub fn gaps<'a>(config: &Config, loaded: &'a Loaded, generated: &Generated, filt
             let tx = &generated.txs[i];
             // A payment settles the subscription's balance account, which
             // stands in for its income or expense account.
-            let subscription = tx.tags.iter().any(|(name, _)| name == "subscription");
+            let subscription = tx.tags.iter().any(|(name, _)| name == tags::SUBSCRIPTION);
             for p in tx.postings.iter().filter(|p| p.account != *bank) {
-                if p.account.contains(":unmatched:") {
+                if is_fallback_account(&p.account) {
                     by_rule.entry(p.account.clone()).or_default().add(-p.amount);
                 } else if p.account == UNKNOWN_IN || p.account == UNKNOWN_OUT {
                     wont_map.add(-p.amount);

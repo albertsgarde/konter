@@ -213,12 +213,6 @@ fn valid_name(name: &str) -> bool {
         && !name.starts_with('-')
 }
 
-/// Tags konter writes on transactions itself. A rule's own tags can't use
-/// them, or a transaction could pass for a transfer or a subscription payment
-/// with whatever reads the tags.
-const BUILT_IN_TAGS: [&str; 9] =
-    ["bank-id", "rule", "purchased", "original", "transfer", "transfer-pair", "subscription", "pays", "source"];
-
 pub(crate) fn valid_tag(s: &str) -> bool {
     !s.is_empty() && !s.contains([',', ';', '\n', ' ', ':'])
 }
@@ -253,7 +247,7 @@ fn convert_output(raw: RawOutput) -> Result<Output> {
         if !valid_tag(k) || v.contains([',', ';', '\n']) {
             bail!("invalid tag {k:?} = {v:?} (no spaces, commas, colons or semicolons in names; no commas in values)");
         }
-        if BUILT_IN_TAGS.contains(&k.as_str()) {
+        if crate::tags::ALL.contains(&k.as_str()) {
             bail!("tag {k:?} is one konter writes itself; use another name");
         }
     }

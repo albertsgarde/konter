@@ -27,6 +27,7 @@ use crate::findings::Findings;
 use crate::journal;
 use crate::model::{LedgerTransaction, Posting, Provenance};
 use crate::money::{Amount, fmt_amount, fmt_num};
+use crate::tags;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -47,10 +48,6 @@ pub enum Flow {
     /// nothing; transfers from `from` to `to` pay it.
     Transfer { from: String, to: String },
 }
-
-/// The tag on the transfers that pay a transfer subscription. It isn't
-/// `subscription`, which marks payments that stand in for income or spending.
-pub const PAYS_TAG: &str = "pays";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -304,7 +301,7 @@ fn transfer_payments<'a>(
         let Provenance::Bank { source, .. } = &tx.provenance else { return None };
         // An imported target goes through assets:transfers with a tag; one
         // without data is posted to directly.
-        let to_target = tx.tags.iter().any(|(k, v)| k == "transfer" && v == to)
+        let to_target = tx.tags.iter().any(|(k, v)| k == tags::TRANSFER && v == to)
             || tx.postings.iter().any(|p| p.account == *to_ledger);
         (source == from && to_target).then(|| {
             let moved: Decimal = tx.postings.iter().filter(|p| p.account == *from_ledger).map(|p| -p.amount).sum();
@@ -345,7 +342,7 @@ pub fn generate(
             let Flow::Transfer { from, to } = &s.flow else { unreachable!("only transfers have no balance account") };
             let paying: Vec<usize> = transfer_payments(config, from, to, &g.txs).map(|(i, _)| i).collect();
             for i in paying {
-                g.txs[i].tags.push((PAYS_TAG.into(), s.name.clone()));
+                g.txs[i].tags.push((tags::PAYS.into(), s.name.clone()));
             }
             continue;
         };
@@ -355,7 +352,7 @@ pub fn generate(
             g.txs.push(LedgerTransaction {
                 date: start,
                 description: format!("{}: opening balance", s.payee),
-                tags: vec![("subscription".into(), s.name.clone())],
+                tags: vec![(tags::SUBSCRIPTION.into(), s.name.clone())],
                 comments: Vec::new(),
                 postings: vec![
                     Posting::new(&balance_account, s.signed(s.opening), &commodity),
@@ -371,7 +368,7 @@ pub fn generate(
             g.txs.push(LedgerTransaction {
                 date: due,
                 description: s.payee.clone(),
-                tags: vec![("subscription".into(), s.name.clone())],
+                tags: vec![(tags::SUBSCRIPTION.into(), s.name.clone())],
                 comments: Vec::new(),
                 postings,
                 provenance: Provenance::Subscription,
@@ -481,8 +478,8 @@ pub fn forecast(config: &Config, subs: &[Subscription], states: &[State], as_of:
     let commodity = &config.books.currency;
     for (s, state) in subs.iter().zip(states) {
         let (after, tag) = match s.flow {
-            Flow::Transfer { .. } => (state.paid_until.map_or(as_of, |p| p.max(as_of)), PAYS_TAG),
-            _ => (as_of, "subscription"),
+            Flow::Transfer { .. } => (state.paid_until.map_or(as_of, |p| p.max(as_of)), tags::PAYS),
+            _ => (as_of, tags::SUBSCRIPTION),
         };
         let Some(mut from) = s.next_due(after) else { continue };
         let every = match s.every {
