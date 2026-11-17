@@ -56,7 +56,15 @@ The server pushes without asking, so what it may push is fenced in from several 
    ```
    The timer runs at 06:00, or as soon as the machine is on again if it was off or asleep then, so a machine that isn't always on gets its daily run too (without lingering, only while you're logged in). The daily run first waits, for up to 30 minutes, until it can reach Enable Banking (`wait_for` in `relay.toml`), so it doesn't report a failed fetch just because the network isn't back yet. `journalctl --user -u konter-relay -u konter-daily` shows what they did.
 
-To start over with the bot (a new device, say), stop it and remove `~/.local/state/konter-relay/`: the session and its encryption keys are there, and are no use without each other.
+To start over with the bot (a new device, say), stop it and remove `~/.local/state/konter-relay/`: the session and its encryption keys are there, and are no use without each other. The log goes with it.
+
+## The log
+
+`konter-relay` says what it does on stderr, which systemd keeps in the journal (`journalctl --user -u konter-relay`, or `-u konter-daily`), and in a file per command and day in its state folder: `~/.local/state/konter-relay/log/run.<date>.log` and `daily.<date>.log`. The files are readable only by you, and each command keeps its last 30 days.
+
+- **What's in it:** that it started and is listening, the commands it ran in the clone with how long they took and whether they failed, that a digest was left in the outbox or posted, that a message came and how long Claude took to answer or what kind of thing went wrong, and warnings and errors from the Matrix SDK.
+- **What's never in it:** bank transactions and secrets. A message, a digest, Claude's answer and what a failed command printed can all quote the books, so the log says that they happened, not what they said. What they said goes where it always did: to the room, for you.
+- An error in `relay.toml` or in the relay's own files names the file and the line, without showing the line: `relay.toml` can hold the password.
 
 ## What the server's Claude does with a reply
 

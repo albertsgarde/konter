@@ -12,15 +12,23 @@
 //! A conversation with Claude starts on the first reply after a digest, so
 //! Claude only runs when the owner answers, and each new digest starts a new
 //! conversation.
+//!
+//! What the relay does goes in its log (`logging`), never what the messages,
+//! the digests or the commands it runs said: those can quote the books.
+
+// Everything is said through the log, which goes to stderr too.
+#![warn(clippy::print_stderr)]
+
+mod logging;
 
 use std::fs::File;
 use std::io::{Read as _, Write as _};
 use std::net::{TcpStream, ToSocketAddrs as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use konter_repo::fetch::{expand_home, write_private};
 use matrix_sdk::authentication::matrix::MatrixSession;
@@ -29,8 +37,10 @@ use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
 use matrix_sdk::ruma::events::room::message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent};
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId};
 use matrix_sdk::{Client, Room};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tracing::{Instrument as _, Span, error, info, info_span, warn};
 
 #[derive(Parser)]
 #[command(version, about = "Posts konter's daily digest to Matrix and hands replies to Claude")]
@@ -81,7 +91,7 @@ struct Config {
     /// don't wait.
     #[serde(default = "default_wait_for")]
     wait_for: Vec<String>,
-    /// Where the relay keeps its session, store, outbox and lock (default:
+    /// Where the relay keeps its session, store, outbox, lock and log (default:
     /// $XDG_STATE_HOME/konter-relay, or ~/.local/state/konter-relay).
     state: Option<PathBuf>,
 }
@@ -109,7 +119,13 @@ impl Config {
             None => konter_repo::fetch::config_dir()?.join("relay.toml"),
         };
         let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        let mut config: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let mut config: Config = toml::from_str(&text).map_err(|e| {
+            // Not toml's own account of it, which shows the line it's about:
+            // the file can hold the password, and this is printed.
+            let line =
+                e.span().and_then(|span| text.get(..span.start)).map_or(0, |before| before.matches('\n').count() + 1);
+            anyhow!("parsing {}: line {line}: {}", path.display(), e.message())
+        })?;
         config.clone = expand_home(&config.clone);
         config.state = Some(match config.state.take() {
             Some(dir) => expand_home(&dir),
@@ -164,7 +180,7 @@ impl Conversation {
         if !path.exists() {
             return Ok(Conversation::default());
         }
-        Ok(serde_json::from_str(&std::fs::read_to_string(&path)?)?)
+        read_json(&path)
     }
 
     fn save(&self, config: &Config) -> Result<()> {
@@ -180,21 +196,60 @@ fn lock(config: &Config) -> Result<File> {
     Ok(file)
 }
 
+/// Reads a JSON file of the relay's own. They hold secrets or quote the
+/// books, and serde's account of what's wrong can quote what it stumbled on,
+/// so the error says only where that was.
+fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("{} isn't what the relay wrote: line {}, column {}", path.display(), e.line(), e.column()))
+}
+
 fn now() -> String {
     jiff::Timestamp::now().to_string()
 }
 
-fn main() -> Result<()> {
+fn main() -> ExitCode {
     let cli = Cli::parse();
-    let config = Config::load(cli.config)?;
-    match cli.command {
+    let command = match cli.command {
+        Cmd::Daily => "daily",
+        Cmd::Run => "run",
+    };
+    let started = Config::load(cli.config).and_then(|config| {
+        logging::start(config.state(), command)?;
+        Ok(config)
+    });
+    let config = match started {
+        Ok(config) => config,
+        Err(e) => return fail_without_a_log(&e),
+    };
+    info!(version = env!("CARGO_PKG_VERSION"), "konter-relay {command} starts.");
+    let done = match cli.command {
         Cmd::Daily => daily(&config),
-        Cmd::Run => tokio::runtime::Runtime::new()?.block_on(run(config)),
+        Cmd::Run => tokio::runtime::Runtime::new().map_err(Into::into).and_then(|tokio| tokio.block_on(run(config))),
+    };
+    match done {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            error!("{e:#}");
+            ExitCode::FAILURE
+        }
     }
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the config or the log's folder is what failed, so there is no log to say it in"
+)]
+fn fail_without_a_log(error: &anyhow::Error) -> ExitCode {
+    eprintln!("error: {error:#}");
+    ExitCode::FAILURE
+}
+
 /// A shell command in the clone: whether it succeeded, stdout, and stderr.
+/// The log gets how it went, not what it printed.
 fn shell(config: &Config, command: &str) -> Result<(bool, String, String)> {
+    let started = Instant::now();
     let out = Command::new("sh")
         .arg("-c")
         .arg(command)
@@ -202,6 +257,12 @@ fn shell(config: &Config, command: &str) -> Result<(bool, String, String)> {
         .stdin(Stdio::null())
         .output()
         .with_context(|| format!("running {command}"))?;
+    let seconds = started.elapsed().as_secs();
+    if out.status.success() {
+        info!(command, seconds, "A command in the clone finished.");
+    } else {
+        warn!(command, seconds, status = %out.status, "A command in the clone failed.");
+    }
     Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -232,7 +293,7 @@ fn wait_online(addrs: &[String], limit: Duration) -> bool {
         }
         if !said {
             let offline: Vec<&str> = offline.iter().map(|addr| addr.as_str()).collect();
-            eprintln!("Waiting to reach {}.", offline.join(", "));
+            info!(addresses = offline.join(", "), "Waiting for the network.");
             said = true;
         }
         std::thread::sleep(Duration::from_secs(15));
@@ -249,7 +310,7 @@ fn reachable(addr: &str) -> bool {
 fn daily(config: &Config) -> Result<()> {
     // Before the lock, so the relay can answer while this waits.
     if !wait_online(&config.wait_for, WAIT_ONLINE) {
-        eprintln!("Still offline after {} minutes; running anyway.", WAIT_ONLINE.as_secs() / 60);
+        warn!(minutes = WAIT_ONLINE.as_secs() / 60, "Still offline; running anyway.");
     }
     let _lock = lock(config)?;
     let mut text = String::new();
@@ -272,13 +333,13 @@ fn daily(config: &Config) -> Result<()> {
     let (ok, json, _) = shell(config, &format!("{} --json", config.digest))?;
     let json = if ok { serde_json::from_str(&json).ok() } else { None };
     if text.trim().is_empty() {
-        eprintln!("Nothing to say today.");
+        info!("Nothing to say today.");
         return Ok(());
     }
     let digest = Digest { made: now(), text: text.trim_end().to_string(), json };
-    let name = format!("{}.json", digest.made.replace(':', ""));
-    write_private(&config.outbox().join(name), &serde_json::to_vec_pretty(&digest)?)?;
-    eprintln!("{}", digest.text);
+    let path = config.outbox().join(format!("{}.json", digest.made.replace(':', "")));
+    write_private(&path, &serde_json::to_vec_pretty(&digest)?)?;
+    info!(file = %path.display(), lines = digest.text.lines().count(), "Left the digest in the outbox.");
     Ok(())
 }
 
@@ -329,7 +390,7 @@ async fn run(config: Config) -> Result<()> {
                 && room.room_id() == room_id
                 && let Err(e) = room.join().await
             {
-                eprintln!("joining {room_id}: {e}");
+                warn!(room = %room_id, error = %e, "Couldn't join the room.");
             }
         }
     });
@@ -351,7 +412,7 @@ async fn run(config: Config) -> Result<()> {
     tokio::spawn(async move {
         while let Some(job) = queue.recv().await {
             if let Err(e) = work(&worker_client, &worker_config, job).await {
-                eprintln!("error: {e:#}");
+                error!(error = format!("{e:#}"), "A job failed.");
                 if let Some(room) = worker_client.get_room(&worker_config.room) {
                     let _ = room.send(RoomMessageEventContent::text_plain(format!("Relay error: {e:#}"))).await;
                 }
@@ -359,7 +420,7 @@ async fn run(config: Config) -> Result<()> {
         }
     });
 
-    eprintln!("Listening in {} for {}.", config.room, config.owner);
+    info!(room = %config.room, owner = %config.owner, "Listening.");
     client.sync(SyncSettings::default().token(response.next_batch)).await?;
     Ok(())
 }
@@ -371,23 +432,82 @@ async fn work(client: &Client, config: &std::sync::Arc<Config>, job: Job) -> Res
     match job {
         Job::Outbox => {
             for path in outbox(config)? {
-                let digest: Digest = serde_json::from_slice(&std::fs::read(&path)?)?;
+                let digest: Digest = read_json(&path)?;
                 room.send(RoomMessageEventContent::text_plain(&digest.text)).await?;
+                info!(made = digest.made, "Posted a digest.");
                 // A new digest, a new conversation.
                 Conversation { digest: Some(digest), session: None }.save(config)?;
                 std::fs::remove_file(&path)?;
             }
         }
-        Job::Message(text) => {
-            room.typing_notice(true).await?;
-            let worker = config.clone();
-            let answer = tokio::task::spawn_blocking(move || answer(&worker, &text)).await?;
-            room.typing_notice(false).await?;
-            let answer = answer.unwrap_or_else(|e| format!("Claude didn't answer: {e:#}"));
-            room.send(RoomMessageEventContent::text_markdown(answer)).await?;
-        }
+        Job::Message(text) => reply(&room, config, text).instrument(info_span!("message")).await?,
     }
     Ok(())
+}
+
+/// Hands a message from the owner to Claude, and posts what it answers.
+async fn reply(room: &Room, config: &std::sync::Arc<Config>, text: String) -> Result<()> {
+    info!(chars = text.chars().count(), "A message from the owner.");
+    room.typing_notice(true).await?;
+    let started = Instant::now();
+    let (worker, span) = (config.clone(), Span::current());
+    let answer = tokio::task::spawn_blocking(move || span.in_scope(|| answer(&worker, &text))).await?;
+    room.typing_notice(false).await?;
+    let seconds = started.elapsed().as_secs();
+    let answer = match answer {
+        Ok(answer) => {
+            info!(seconds, chars = answer.chars().count(), "Claude answered.");
+            answer
+        }
+        Err(unanswered) => {
+            warn!(seconds, why = unanswered.for_the_log(), "Claude didn't answer.");
+            format!("Claude didn't answer: {}", unanswered.for_the_owner())
+        }
+    };
+    room.send(RoomMessageEventContent::text_markdown(answer)).await?;
+    Ok(())
+}
+
+/// Why Claude gave no answer. What Claude says about it can quote the books,
+/// so the owner is told all of it and the log only what kind of thing it was.
+#[derive(Debug)]
+enum Unanswered {
+    /// The relay couldn't run Claude, or keep the conversation.
+    Relay(anyhow::Error),
+    /// Claude ran but printed no result. `stderr`: the end of what it wrote there.
+    NoResult { claude: String, stderr: String },
+    /// Claude's own account of an error.
+    Claude(String),
+}
+
+impl Unanswered {
+    fn for_the_owner(&self) -> String {
+        match self {
+            Unanswered::Relay(e) => format!("{e:#}"),
+            Unanswered::NoResult { claude, stderr } => format!("{claude} printed no result: {stderr}"),
+            Unanswered::Claude(said) => said.clone(),
+        }
+    }
+
+    fn for_the_log(&self) -> String {
+        match self {
+            Unanswered::Relay(e) => format!("{e:#}"),
+            Unanswered::NoResult { claude, .. } => format!("{claude} printed no result"),
+            Unanswered::Claude(_) => "Claude reported an error".into(),
+        }
+    }
+}
+
+impl From<anyhow::Error> for Unanswered {
+    fn from(e: anyhow::Error) -> Unanswered {
+        Unanswered::Relay(e)
+    }
+}
+
+impl From<std::io::Error> for Unanswered {
+    fn from(e: std::io::Error) -> Unanswered {
+        Unanswered::Relay(e.into())
+    }
 }
 
 /// The outbox's digests, oldest first.
@@ -431,9 +551,10 @@ fn prompt(conversation: &Conversation, message: &str) -> String {
 }
 
 /// Claude's answer to a message, in the clone, continuing the conversation.
-fn answer(config: &Config, message: &str) -> Result<String> {
+fn answer(config: &Config, message: &str) -> Result<String, Unanswered> {
     let _lock = lock(config)?;
     let mut conversation = Conversation::load(config)?;
+    info!(resumed = conversation.session.is_some(), "Asking Claude.");
     let mut command = Command::new(&config.claude);
     command.args(["-p", "--output-format", "json"]);
     if let Some(session) = &conversation.session {
@@ -449,15 +570,16 @@ fn answer(config: &Config, message: &str) -> Result<String> {
     // Dropped once written, so Claude sees the end of the prompt.
     child.stdin.take().expect("stdin is piped, just above").write_all(prompt(&conversation, message).as_bytes())?;
     let out = child.wait_with_output()?;
-    let result: ClaudeResult = serde_json::from_slice(&out.stdout).with_context(|| {
-        format!("{} printed no result: {}", config.claude, last_lines(&String::from_utf8_lossy(&out.stderr), 10))
-    })?;
+    let Ok(result) = serde_json::from_slice::<ClaudeResult>(&out.stdout) else {
+        let stderr = last_lines(&String::from_utf8_lossy(&out.stderr), 10);
+        return Err(Unanswered::NoResult { claude: config.claude.clone(), stderr });
+    };
     if let Some(session) = result.session_id {
         conversation.session = Some(session);
         conversation.save(config)?;
     }
     if result.is_error {
-        bail!("{}", result.result.unwrap_or_else(|| "an error, without a message".into()));
+        return Err(Unanswered::Claude(result.result.unwrap_or_else(|| "an error, without a message".into())));
     }
     Ok(result.result.unwrap_or_default())
 }
@@ -480,11 +602,8 @@ struct Saved {
 
 async fn login(config: &Config) -> Result<Client> {
     let path = config.state().join("session.json");
-    let mut saved: Saved = if path.exists() {
-        serde_json::from_slice(&std::fs::read(&path)?).with_context(|| format!("reading {}", path.display()))?
-    } else {
-        Saved { passphrase: random_hex()?, session: None }
-    };
+    let mut saved: Saved =
+        if path.exists() { read_json(&path)? } else { Saved { passphrase: random_hex()?, session: None } };
     let client = Client::builder()
         .homeserver_url(&config.homeserver)
         .sqlite_store(config.state().join("store"), Some(&saved.passphrase))
@@ -501,7 +620,7 @@ async fn login(config: &Config) -> Result<Client> {
                 .await?;
             saved.session = client.matrix_auth().session();
             write_private(&path, &serde_json::to_vec_pretty(&saved)?)?;
-            eprintln!("Logged in as {}. The password can go from relay.toml now.", config.user);
+            info!(user = %config.user, "Logged in. The password can go from relay.toml now.");
         }
     }
     Ok(client)
@@ -561,6 +680,51 @@ mod tests {
         // Nothing listens there now, and a zero limit gives up at once.
         assert!(!wait_online(&[open], Duration::ZERO));
         assert!(!wait_online(&["no-such-host.invalid:443".into()], Duration::ZERO));
+    }
+
+    #[test]
+    fn the_log_gets_the_kind_of_failure_and_the_owner_what_was_said() {
+        let said = "the Bakery transaction of 45.00 doesn't match";
+        let claude = Unanswered::Claude(said.into());
+        assert_eq!(claude.for_the_owner(), said);
+        assert_eq!(claude.for_the_log(), "Claude reported an error");
+        let silent = Unanswered::NoResult { claude: "claude".into(), stderr: said.into() };
+        assert!(silent.for_the_owner().contains(said));
+        assert_eq!(silent.for_the_log(), "claude printed no result");
+        // What the relay itself couldn't do quotes nothing, and helps in the log.
+        let relay = Unanswered::from(anyhow!("starting claude: not found"));
+        assert_eq!(relay.for_the_log(), relay.for_the_owner());
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("konter-relay-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scratch folder is made");
+        dir
+    }
+
+    #[test]
+    fn an_error_in_the_relays_files_doesnt_quote_them() {
+        let dir = scratch("json");
+        let path = dir.join("conversation.json");
+        // A string where the digest should be: serde would quote it.
+        std::fs::write(&path, r#"{"digest": "1. 2026-11-14 Bakery -45.00"}"#).expect("the file is written");
+        let error = format!("{:#}", read_json::<Conversation>(&path).expect_err("that's no conversation"));
+        assert!(error.contains("conversation.json isn't what the relay wrote: line 1"), "{error}");
+        assert!(!error.contains("Bakery"), "{error}");
+        std::fs::remove_dir_all(&dir).expect("the scratch folder is removed");
+    }
+
+    #[test]
+    fn an_error_in_the_config_doesnt_show_the_line() {
+        let dir = scratch("config");
+        let path = dir.join("relay.toml");
+        std::fs::write(&path, "homeserver = \"https://matrix.example.org\"\npassword = \"not-so-secret\n")
+            .expect("the file is written");
+        let error = format!("{:#}", Config::load(Some(path)).expect_err("the string isn't closed"));
+        assert!(error.contains("relay.toml: line 2: "), "{error}");
+        assert!(!error.contains("not-so-secret"), "{error}");
+        std::fs::remove_dir_all(&dir).expect("the scratch folder is removed");
     }
 
     #[test]
