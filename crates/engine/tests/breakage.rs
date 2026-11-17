@@ -13,6 +13,7 @@ use konter_engine::config::Config;
 use konter_engine::findings::Severity;
 use konter_engine::pipeline::Build;
 use konter_engine::rules::Rules;
+use konter_engine::sources;
 use konter_engine::transfers::{Leg, pair};
 use rust_decimal::Decimal;
 
@@ -295,7 +296,8 @@ fn the_first_days_order_follows_the_running_balance() {
 }
 
 /// Amounts past what a Decimal holds, or schedules past year 9999, used to
-/// make the build panic instead of reporting what's wrong.
+/// make the build panic instead of reporting what's wrong. (An amount that
+/// large is now refused where it's read, here when the rules load.)
 #[test]
 fn out_of_range_inputs_are_reported_not_panics() {
     let config = &config(NORDEA);
@@ -370,6 +372,41 @@ prices = [{ from = 2026-01-01, amount = 1 }]
     }
     assert!(panicked.is_empty(), "the build panicked on {panicked:?}");
     assert!(unreported.is_empty(), "the build said nothing about {unreported:?}");
+}
+
+/// Two amounts of 7 × 10²⁸ in a bank file overflowed the sum behind the "not
+/// mapped" percentage, and the build panicked. An amount is now held to 15
+/// digits and 8 decimals where it's read, so no sum gets near that, and the
+/// largest amounts there are build like any others.
+#[test]
+fn an_amount_past_the_largest_is_refused_and_the_largest_build() {
+    let config = &config(NORDEA);
+    let rel = nordea_rel("2026-01-31 10.00.00");
+    for (amount, expected) in [
+        ("-70.000.000.000.000.000.000.000.000.000,00", "more than 15 digits before the decimal point"),
+        ("-1.000.000.000.000.000,00", "more than 15 digits before the decimal point"),
+        ("-0,000000001", "more than 8 decimals"),
+    ] {
+        let csv = nordea_csv(&[("2026/01/05", amount, "Groceries", "0,00")]);
+        let Err(error) = sources::parse_raw(config, "bank:a", &rel, &csv, None) else {
+            panic!("a bank file with {amount} is read");
+        };
+        let error = format!("{error:#}");
+        assert!(error.contains("line 2") && error.contains("amount out of range"), "{error}");
+        assert!(error.contains(expected), "{error}");
+    }
+
+    let largest = "999.999.999.999.999,99999999";
+    let csv = nordea_csv(&[
+        ("2026/01/07", largest, "Refund", largest),
+        ("2026/01/06", &format!("-{largest}"), "Groceries", "0,00"),
+        ("2026/01/05", largest, "Refund", largest),
+    ]);
+    let files = [("bank:a", rel.as_str(), csv.as_str())];
+    let build = build(config, rules(config, &[]), &[], &files, date(2026, 1, 31));
+    assert!(!build.findings.has_errors(), "{:?}", findings_about(&build, ""));
+    let largest = Decimal::from_str_exact("999999999999999.99999999").expect("a decimal");
+    assert_eq!(posted(&build, "assets:bank:a", date(2026, 1, 31)), largest);
 }
 
 /// A schedule that runs past year 9999 fails the build, and the error names

@@ -10,7 +10,6 @@
 //! interprets them.
 
 use std::collections::BTreeMap;
-use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
 use jiff::civil::Date;
@@ -52,7 +51,7 @@ fn amount_at(v: &Value, path: &[&str]) -> Result<Option<Decimal>> {
     match path.iter().try_fold(v, |v, k| v.get(k)) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => parse_plain(s).map(Some),
-        Some(Value::Number(n)) => Decimal::from_str(&n.to_string()).map(Some).context("invalid amount"),
+        Some(Value::Number(n)) => parse_plain(&n.to_string()).map(Some),
         Some(other) => bail!("invalid amount {other}"),
     }
 }
@@ -207,6 +206,8 @@ pub fn parse(text: &str, ctx: &FileContext) -> Result<(Vec<BankTransaction>, Vec
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
 
     fn ctx() -> FileContext {

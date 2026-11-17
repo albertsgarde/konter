@@ -43,6 +43,8 @@ Finally `books` writes everything in `ledger/`: those two and `main.journal`, hl
 
 ## 3. Inputs
 
+**Amounts**, wherever they're read (bank data, rules, hand-written transactions), have at most 15 digits before the decimal point and 8 decimals. One outside that is refused where it's read: a bank file with one doesn't parse, and a rule or a transaction with one doesn't load. Within it, every sum over the books is exact and nothing overflows.
+
 **`config/sources.toml`**
 - `[books]`: `start`, `currency`, `transfer_window_days` (5).
 - `[sources."<bank>:<account>"]`: one per account you own.
