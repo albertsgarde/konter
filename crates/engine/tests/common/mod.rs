@@ -49,6 +49,19 @@ pub fn try_build(
     files: &[(&str, &str, &str)],
     as_of: Date,
 ) -> anyhow::Result<Build> {
+    try_build_with(config, rules, accounts, "", files, as_of)
+}
+
+/// Builds the books with hand-written `transactions` (the text of
+/// config/transactions.toml), or says why they can't be built.
+pub fn try_build_with(
+    config: &Config,
+    rules: Rules,
+    accounts: &[&str],
+    transactions: &str,
+    files: &[(&str, &str, &str)],
+    as_of: Date,
+) -> anyhow::Result<Build> {
     let mut findings = Findings::default();
     let mut raw: BTreeMap<&str, Vec<sources::RawFile>> = BTreeMap::new();
     for (name, source) in &config.sources {
@@ -68,7 +81,7 @@ pub fn try_build(
             .collect(),
     };
     let quoted: Vec<String> = accounts.iter().map(|a| format!("{a:?}")).collect();
-    let manual = Manual::parse(&format!("accounts = [{}]", quoted.join(", ")), "").expect("a list of accounts parses");
+    let manual = Manual::parse(&format!("accounts = [{}]", quoted.join(", ")), transactions)?;
     pipeline::assemble(config, rules, loaded, &manual, as_of, findings)
 }
 
@@ -86,12 +99,19 @@ pub fn nordea_csv(rows: &[(&str, &str, &str, &str)]) -> String {
 
 /// The path of a Nordea export taken at `when` (`2026-01-12 10.00.00`).
 pub fn nordea_rel(when: &str) -> String {
-    format!("nordea/1234567890/Konto 1234567890 - {when}.csv")
+    nordea_rel_of("1234567890", when)
 }
 
-/// Danish notation for an amount: `-1069.5` → `-1.069,50`.
+/// The path of a Nordea export of account `number` taken at `when`.
+pub fn nordea_rel_of(number: &str, when: &str) -> String {
+    format!("nordea/{number}/Konto {number} - {when}.csv")
+}
+
+/// Danish notation for an amount, with two decimals or as many as it has:
+/// `-1069.5` → `-1.069,50`.
 pub fn danish(d: Decimal) -> String {
-    let text = format!("{:.2}", d.abs());
+    let d = d.normalize();
+    let text = if d.scale() <= 2 { format!("{:.2}", d.abs()) } else { d.abs().to_string() };
     let (int, frac) = text.split_once('.').expect("the amount is written with two decimals");
     let mut grouped = String::new();
     for (i, c) in int.chars().enumerate() {

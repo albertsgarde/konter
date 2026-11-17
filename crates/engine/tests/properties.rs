@@ -7,15 +7,22 @@
 
 mod common;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
+use std::panic::AssertUnwindSafe;
 
-use common::{NORDEA, Rng, build, config, danish, nordea_csv, nordea_rel, rules};
-use jiff::civil::date;
+use common::{
+    NORDEA, Rng, build, config, danish, nordea_csv, nordea_rel, nordea_rel_of, posted, rules, try_build_with,
+};
+use jiff::civil::{Date, date};
 use konter_engine::config::Config;
 use konter_engine::dates::days_between;
-use konter_engine::findings::Findings;
+use konter_engine::findings::{Findings, Severity};
 use konter_engine::money::{Amount, fmt_num, parse_danish, parse_plain};
+use konter_engine::pipeline::Build;
+use konter_engine::rules::Rules;
 use konter_engine::sources::{self, SourceData};
+use konter_engine::tags;
 use konter_engine::transfers::{Leg, pair};
 use rust_decimal::Decimal;
 
@@ -445,5 +452,628 @@ fn amounts_read_back_exactly() {
             let read: InRules = toml::from_str(&format!("amount = {written}")).expect("the amount reads in the rules");
             assert_eq!(read.amount.0, d, "amount = {written}");
         }
+    }
+}
+
+// ── Whole builds (docs/spec.md §1 and §7) ──────────────────────────────
+
+/// Two imported accounts and one without data.
+const TWO_BANKS: &str = r#"
+[books]
+start = 2026-01-01
+
+[sources."bank:a"]
+bank = "nordea"
+number = "1234567890"
+ledger = "assets:bank:a"
+id_prefix = "ba"
+formats = ["nordea-csv"]
+unmatched = "allow"
+
+[sources."bank:b"]
+bank = "nordea"
+number = "2222222222"
+ledger = "assets:bank:b"
+id_prefix = "bb"
+formats = ["nordea-csv"]
+unmatched = "allow"
+
+[sources."bank:savings"]
+bank = "nordea"
+ledger = "assets:bank:savings"
+"#;
+
+/// The imported accounts: (source, account number).
+const IMPORTED: [(&str, &str); 2] = [("bank:a", "1234567890"), ("bank:b", "2222222222")];
+
+const ACCOUNTS: [&str; 11] = [
+    "expenses:groceries",
+    "expenses:coffee",
+    "expenses:coffee:shop",
+    "income:salary",
+    "expenses:dinner",
+    "assets:receivable:friend",
+    "assets:prepaid",
+    "expenses:insurance",
+    "expenses:rent",
+    "expenses:kiosk",
+    "expenses:gifts",
+];
+
+/// What a bank row can be, other than a transfer, a card hold or rent: its
+/// description, and whether the money comes in.
+const KINDS: [(&str, bool); 9] = [
+    ("Groceries", false),
+    ("Coffee", false),
+    ("Coffee Shop", false),
+    ("Salary", true),
+    ("Dinner", false),
+    ("Insurance", false),
+    ("Mystery", false),
+    ("Savings", false),
+    ("Kiosk", false),
+];
+
+/// Rules that fit the rows above and never disagree: any of these topics can
+/// be left out, and what's left still maps every transaction it matches in
+/// one way. Between them they use every kind of output and most conditions.
+const TOPICS: [&str; 10] = [
+    r#"
+[[rule]]
+name = "groceries"
+when = { description = "Groceries" }
+account = "expenses:groceries"
+tags = { shop = "corner" }
+"#,
+    r#"
+[[rule]]
+name = "coffee"
+when = { description_re = '(?i)^coffee' }
+account = "expenses:coffee"
+"#,
+    r#"
+[[rule]]
+name = "coffee-shop"
+when = { description = "Coffee Shop" }
+priority = 1
+account = "expenses:coffee:shop"
+payee = "The coffee shop"
+"#,
+    r#"
+[[rule]]
+name = "salary"
+when = { description = "Salary", direction = "in" }
+account = "income:salary"
+"#,
+    r#"
+[[rule]]
+name = "dinner"
+when = { description = "Dinner" }
+note = "A friend pays the rest back"
+split = [
+  { account = "expenses:dinner", amount = 40 },
+  { account = "assets:receivable:friend", rest = true },
+]
+"#,
+    r#"
+[[rule]]
+name = "insurance"
+when = { description = "Insurance" }
+transactions = [
+  { payee = "Insurance (prepaid)", postings = [
+      { account = "@bank" },
+      { account = "assets:prepaid", rest = true } ] },
+  { date = 2026-02-01, payee = "Insurance", postings = [
+      { account = "assets:prepaid", amount = "@amount" },
+      { account = "expenses:insurance", rest = true } ] },
+]
+"#,
+    r#"
+[[rule]]
+name = "mystery"
+when = { description = "Mystery" }
+unknown = "nobody remembers"
+"#,
+    r#"
+[[rule]]
+name = "savings"
+when = { description = "Savings" }
+transfer = "bank:savings"
+"#,
+    r#"
+[[rule]]
+name = "card-hold"
+when = { description = "Card hold" }
+ignore = "the hold and its release cancel out"
+"#,
+    r#"
+[[rule]]
+name = "kiosk-small"
+when = { description = "Kiosk", amount_range = [-60, 0] }
+account = "expenses:kiosk"
+
+[[rule]]
+name = "kiosk-late"
+when = { description = "Kiosk", not = { amount_range = [-60, 0] }, any = [{ date_from = 2026-01-15 }, { source = "bank:b" }] }
+account = "expenses:kiosk"
+"#,
+];
+
+/// Rent and its subscription, due every `every`.
+fn rent(every: &str) -> String {
+    format!(
+        r#"
+[[rule]]
+name = "rent"
+when = {{ description = "Rent" }}
+subscription = "rent"
+
+[[subscription]]
+name = "rent"
+kind = "expense"
+account = "expenses:rent"
+every = "{every}"
+first = 2026-01-01
+prices = [{{ from = 2026-01-01, amount = 5000 }}, {{ from = 2026-02-01, amount = 5200 }}]
+"#
+    )
+}
+
+/// The two sides of the transfers between the imported accounts, one rule each.
+const TRANSFERS: [&str; 4] = [
+    "\n[[rule]]\nname = \"to-b\"\nwhen = { source = \"bank:a\", description = \"To B\" }\ntransfer = \"bank:b\"\n",
+    "\n[[rule]]\nname = \"from-a\"\nwhen = { source = \"bank:b\", description = \"From A\" }\ntransfer = \"bank:a\"\n",
+    "\n[[rule]]\nname = \"to-a\"\nwhen = { source = \"bank:b\", description = \"To A\" }\ntransfer = \"bank:a\"\n",
+    "\n[[rule]]\nname = \"from-b\"\nwhen = { source = \"bank:a\", description = \"From B\" }\ntransfer = \"bank:b\"\n",
+];
+
+/// Rules that disagree with the ones above, or don't fit what they match:
+/// each should give an error among the findings, and still books that add up.
+const TROUBLE: [&str; 4] = [
+    // Ambiguous with "coffee".
+    "\n[[rule]]\nname = \"coffee-twin\"\nwhen = { description = \"Coffee\" }\naccount = \"expenses:coffee\"\n",
+    // Invalid unless the groceries cost 60.
+    r#"
+[[rule]]
+name = "groceries-halves"
+when = { description = "Groceries" }
+priority = 5
+split = [
+  { account = "expenses:groceries", amount = 30 },
+  { account = "expenses:gifts", amount = 30 },
+]
+"#,
+    // Ignores purchases that nothing cancels out.
+    "\n[[rule]]\nname = \"kiosk-gone\"\nwhen = { description = \"Kiosk\" }\npriority = 9\nignore = \"never happened\"\n",
+    // A transfer whose other side isn't one.
+    "\n[[rule]]\nname = \"dinner-moved\"\nwhen = { source = \"bank:a\", description = \"Dinner\" }\npriority = 9\ntransfer = \"bank:b\"\n",
+];
+
+/// Everything a build is made from.
+struct World {
+    config: String,
+    /// Each imported account's history, and the exports that cover it.
+    histories: Vec<(Vec<Row>, Vec<Range<usize>>)>,
+    /// Pieces of rule files. Their order and the files they're in shouldn't matter.
+    rules: Vec<String>,
+    /// config/transactions.toml.
+    transactions: String,
+    as_of: Date,
+}
+
+impl World {
+    /// The raw files: (source, path, text).
+    fn files(&self) -> Vec<(&'static str, String, String)> {
+        let mut files = Vec::new();
+        for ((source, number), (rows, exports)) in IMPORTED.iter().zip(&self.histories) {
+            for (k, range) in exports.iter().enumerate() {
+                let rel = nordea_rel_of(number, &format!("2026-02-{:02} 10.00.00", k + 1));
+                files.push((*source, rel, export_csv(&rows[range.clone()])));
+            }
+        }
+        files
+    }
+
+    /// Builds the books with the rules in `rule_files`: (file, text).
+    fn build(&self, rule_files: &[(String, String)]) -> Result<Build, String> {
+        let config = config(&self.config);
+        let rule_files = rule_files.iter().map(|(file, text)| (file.as_str(), text.as_str()));
+        let rules = Rules::from_files(rule_files, &config).map_err(|e| format!("the rules don't load: {e:#}"))?;
+        let files = self.files();
+        let files: Vec<(&str, &str, &str)> =
+            files.iter().map(|(s, rel, text)| (*s, rel.as_str(), text.as_str())).collect();
+        try_build_with(&config, rules, &ACCOUNTS, &self.transactions, &files, self.as_of)
+            .map_err(|e| format!("the books don't build: {e:#}"))
+    }
+
+    fn describe(&self) -> String {
+        let mut out = format!("as of {}\n", self.as_of);
+        for ((source, _), (rows, exports)) in IMPORTED.iter().zip(&self.histories) {
+            out.push_str(&format!("{source}, in exports of rows {exports:?}:\n"));
+            for (day, amount, what, balance) in rows {
+                out.push_str(&format!("  day {day}: {amount} {what:?}, balance {balance}\n"));
+            }
+        }
+        format!("{out}rules:{}\ntransactions:{}", self.rules.concat(), self.transactions)
+    }
+}
+
+fn decimal(text: &str) -> Decimal {
+    parse_plain(text).expect("the test's amount is a decimal")
+}
+
+/// An amount to pay or receive. With `extremes`, some are as long as amounts
+/// get: 15 digits, 8 decimals.
+fn some_amount(rng: &mut Rng, extremes: bool) -> Decimal {
+    const PLAIN: [&str; 6] = ["12.50", "49.95", "60", "100", "100", "1234.56"];
+    const EXTREME: [&str; 4] = ["499999999999999.99999999", "123456789012345.12345678", "0.00000001", "0.01"];
+    if extremes && rng.below(3) == 0 { decimal(rng.pick(&EXTREME)) } else { decimal(rng.pick(&PLAIN)) }
+}
+
+/// Up to `days` days on the two imported accounts, from 2 January: purchases
+/// and income, transfers between the two (the other side arrives up to five
+/// days later, which is as far apart as two sides pair), card holds released
+/// the same day, and rent.
+fn histories(rng: &mut Rng, days: i8, extremes: bool) -> Vec<Vec<Row>> {
+    // (day, amount, description, whether the sign is free to change)
+    let mut events: [Vec<(i8, Decimal, &'static str, bool)>; 2] = [Vec::new(), Vec::new()];
+    for day in 2..2 + days {
+        for account in 0..2 {
+            for _ in 0..rng.below(3) {
+                match rng.below(12) {
+                    0 => {
+                        let amount = some_amount(rng, false);
+                        let lag = i8::try_from(rng.below(6)).expect("below 6");
+                        let (to, from) = if account == 0 { ("To B", "From A") } else { ("To A", "From B") };
+                        events[account].push((day, -amount, to, false));
+                        events[1 - account].push((day + lag, amount, from, false));
+                    }
+                    1 => {
+                        let amount = some_amount(rng, false);
+                        events[account].push((day, -amount, "Card hold", false));
+                        events[account].push((day, amount, "Card hold", false));
+                    }
+                    2 => events[account].push((
+                        day,
+                        decimal(rng.pick(&["-5000", "-5000", "-4000", "-6000"])),
+                        "Rent",
+                        false,
+                    )),
+                    _ => {
+                        let (what, incoming) = *rng.pick(&KINDS);
+                        let amount = some_amount(rng, extremes);
+                        events[account].push((day, if incoming { amount } else { -amount }, what, true));
+                    }
+                }
+            }
+        }
+    }
+    // A balance stays under half of the largest amount there is, give or take
+    // the plain amounts: an extreme one that would take it past that goes the
+    // other way.
+    let half = decimal("500000000000000");
+    events
+        .into_iter()
+        .map(|mut events| {
+            // Stable, so a hold and its release stay together.
+            events.sort_by_key(|event| event.0);
+            let mut balance = decimal(rng.pick(&["1000", "0", "-250.75"]));
+            let mut rows = Vec::new();
+            for (day, mut amount, what, free) in events {
+                if free && (balance + amount).abs() >= half {
+                    amount = -amount;
+                }
+                balance += amount;
+                rows.push((day, amount, what, balance));
+            }
+            rows
+        })
+        .collect()
+}
+
+/// config/transactions.toml: sometimes a loan that's written off, and in a
+/// `wild` world sometimes a transaction that doesn't balance and one whose
+/// balance assertion fails.
+fn hand_written(rng: &mut Rng, wild: bool) -> String {
+    let mut transactions = String::new();
+    if rng.below(2) == 0 {
+        transactions.push_str(
+            r#"
+[[transaction]]
+date = 2026-01-20
+payee = "A gift, lent and written off"
+tags = { to = "friend" }
+postings = [
+  { account = "assets:receivable:friend", amount = 25 },
+  { account = "expenses:gifts", rest = true },
+]
+
+[[transaction]]
+date = 2026-01-25
+payee = "Written off"
+postings = [
+  { account = "assets:receivable:friend", balance = 0 },
+  { account = "expenses:gifts", rest = true },
+]
+"#,
+        );
+    }
+    if wild && rng.below(4) == 0 {
+        // One that doesn't balance.
+        transactions.push_str(
+            r#"
+[[transaction]]
+date = 2026-01-22
+payee = "Lopsided"
+postings = [
+  { account = "expenses:gifts", amount = 10 },
+  { account = "assets:prepaid", amount = -9 },
+]
+"#,
+        );
+    }
+    if wild && rng.below(4) == 0 {
+        // One whose assertion fails.
+        transactions.push_str(
+            r#"
+[[transaction]]
+date = 2026-01-23
+payee = "Miscounted"
+postings = [
+  { account = "expenses:gifts", amount = 10, balance = 999 },
+  { account = "assets:prepaid", rest = true },
+]
+"#,
+        );
+    }
+    transactions
+}
+
+/// Adds up to two pins or later marks to the world's rules. Unless it's
+/// `wild` they're on purchases that nothing else depends on, and a pin only
+/// books to an account.
+fn pin_and_mark(rng: &mut Rng, world: &mut World, wild: bool) -> Result<(), String> {
+    // Pins and later marks go by ID, and IDs come from a build.
+    let build = world.build(&[])?;
+    let all: Vec<(&str, &str)> = build
+        .loaded
+        .sources
+        .values()
+        .flat_map(|data| &data.txs)
+        .map(|t| (t.id.as_str(), t.description.as_str()))
+        .collect();
+    // A pin on one of these is never wrong: nothing else depends on them.
+    let plain: Vec<&str> =
+        all.iter().filter(|(_, what)| ["Kiosk", "Groceries", "Dinner"].contains(what)).map(|t| t.0).collect();
+    let mut taken = BTreeSet::new();
+    for _ in 0..rng.below(3) {
+        let pool: Vec<&str> = if wild { all.iter().map(|t| t.0).collect() } else { plain.clone() };
+        if pool.is_empty() {
+            continue;
+        }
+        let id = *rng.pick(&pool);
+        if !taken.insert(id) {
+            continue;
+        }
+        let outputs = [
+            "account = \"expenses:gifts\"\npayee = \"A present\"",
+            "later",
+            "unknown = \"lost the receipt\"",
+            "ignore = \"never happened\"",
+        ];
+        match *rng.pick(if wild { &outputs[..] } else { &outputs[..2] }) {
+            "later" => world.rules.push(format!("\n[later.{id:?}]\nnote = \"ask about it\"\n")),
+            output => world.rules.push(format!("\n[pin.{id:?}]\n{output}\n")),
+        }
+    }
+    if wild && rng.below(4) == 0 {
+        world.rules.push("\n[pin.\"ba-2026-01-31-000000\"]\naccount = \"expenses:gifts\"\n".to_string());
+    }
+    Ok(())
+}
+
+/// A world of the given `size`. Unless it's `wild`, nothing in it is wrong:
+/// the rules agree, every transfer has both its sides, and what's written by
+/// hand adds up. A wild one also has some of what shouldn't be there.
+fn world(rng: &mut Rng, size: usize, wild: bool) -> Result<World, String> {
+    let days = i8::try_from((2 * size).min(24)).expect("at most 24");
+    let extremes = rng.below(4) == 0;
+    let histories: Vec<(Vec<Row>, Vec<Range<usize>>)> = histories(rng, days, extremes)
+        .into_iter()
+        .map(|rows| {
+            // Half of them taken during the day, as exports usually are.
+            let mid_day = rng.below(2) == 0;
+            let exports = if rows.is_empty() { Vec::new() } else { exports(rng, &rows, mid_day) };
+            (rows, exports)
+        })
+        .collect();
+
+    let mut rules: Vec<String> = TOPICS.iter().filter(|_| rng.below(4) > 0).map(|topic| (*topic).to_string()).collect();
+    if rng.below(4) > 0 {
+        let every = if wild { *rng.pick(&["1 month", "1 week", "10 days", "1 year"]) } else { "1 month" };
+        rules.push(rent(every));
+    }
+    if rng.below(4) > 0 {
+        rules.extend(TRANSFERS.iter().map(|rule| (*rule).to_string()));
+        if wild && rng.below(3) == 0 {
+            rules.remove(rules.len() - 1 - rng.below(4));
+        }
+    }
+    if wild {
+        rules.extend(TROUBLE.iter().filter(|_| rng.below(4) == 0).map(|rule| (*rule).to_string()));
+    }
+
+    let transactions = hand_written(rng, wild);
+    let mut config = TWO_BANKS.to_string();
+    if wild && rng.below(3) == 0 {
+        config = config.replacen("unmatched = \"allow\"", "unmatched = \"error\"", 1);
+    }
+    let as_of =
+        if wild && rng.below(4) == 0 { date(2026, 1, 15) } else { *rng.pick(&[date(2026, 1, 31), date(2026, 3, 1)]) };
+    let mut world = World { config, histories, rules, transactions, as_of };
+
+    pin_and_mark(rng, &mut world, wild)?;
+    Ok(world)
+}
+
+/// The errors among a build's findings, as `category: message`.
+fn errors(build: &Build) -> Vec<String> {
+    let errors = build.findings.diags.iter().filter(|d| d.severity == Severity::Error);
+    errors.map(|d| format!("{}: {} {:?}", d.category, d.message, d.details)).collect()
+}
+
+/// "Every bank transaction is booked exactly once": one posting to its
+/// account, with the bank's amount and the bank's balance after it. Only
+/// an ignored one is not in the books.
+fn booked_once(config: &Config, build: &Build) -> Result<(), String> {
+    let mut ids = BTreeSet::new();
+    for (name, data) in &build.loaded.sources {
+        let ledger = &config.sources[name].ledger;
+        for t in &data.txs {
+            ids.insert(t.id.as_str());
+            let Some(outcome) = build.generated.outcomes.get(&t.id) else {
+                return Err(format!("{} has no outcome", t.id));
+            };
+            let made = build.books.iter().filter(|tx| tx.tags.contains(&(tags::BANK_ID.to_string(), t.id.clone())));
+            let bank: Vec<_> = made.flat_map(|tx| &tx.postings).filter(|p| p.account == *ledger).collect();
+            let booked_once = match bank.as_slice() {
+                [] => outcome.ignored.is_some(),
+                [p] => outcome.ignored.is_none() && p.amount == t.amount && p.assert_balance == t.balance_after,
+                _ => false,
+            };
+            if !booked_once {
+                return Err(format!("{} ({} {:?}) isn't booked exactly once: {bank:?}", t.id, t.amount, t.description));
+            }
+        }
+    }
+    for tx in &build.books {
+        if let Some((_, id)) = tx.tags.iter().find(|(tag, _)| tag == tags::BANK_ID)
+            && !ids.contains(id.as_str())
+        {
+            return Err(format!("{} {:?} is booked from {id}, which the bank doesn't have", tx.date, tx.description));
+        }
+    }
+    Ok(())
+}
+
+/// "Every build checks what `hledger check --strict` would": going through
+/// the books again, in their order, finds something wrong exactly when the
+/// build says so.
+fn books_add_up(build: &Build) -> Result<(), String> {
+    let mut balances: BTreeMap<&str, Decimal> = BTreeMap::new();
+    let mut wrong = Vec::new();
+    for tx in &build.books {
+        let sum: Decimal = tx.postings.iter().map(|p| p.amount).sum();
+        if !sum.is_zero() {
+            wrong.push(format!("{} {:?} is off by {sum}", tx.date, tx.description));
+        }
+        for p in &tx.postings {
+            let balance = balances.entry(&p.account).or_default();
+            *balance += p.amount;
+            if p.assert_balance.is_some_and(|asserted| asserted != *balance) {
+                wrong.push(format!(
+                    "{} {:?}: {} is {balance}, not {:?}",
+                    tx.date, tx.description, p.account, p.assert_balance
+                ));
+            }
+        }
+    }
+    let reported = build.findings.diags.iter().any(|d| d.severity == Severity::Error && d.category == "books");
+    if wrong.is_empty() == reported {
+        return Err(format!("the build's check of the books says {reported}, but going through them finds {wrong:?}"));
+    }
+    Ok(())
+}
+
+/// What docs/spec.md promises of every build, whatever the inputs are like.
+/// A `clean` world also builds without errors.
+fn check_world(world: &World, clean: bool, rng: &mut Rng) -> Result<(), String> {
+    let config = config(&world.config);
+    let one_file = [("config/rules.toml".to_string(), world.rules.concat())];
+    let build = world.build(&one_file)?;
+    let errors = errors(&build);
+    if clean && !errors.is_empty() {
+        return Err(format!("nothing is wrong with the inputs, but the build has errors:\n  {}", errors.join("\n  ")));
+    }
+
+    booked_once(&config, &build)?;
+    books_add_up(&build)?;
+
+    // "The bank is ground truth": without errors, each account ends where
+    // the bank says it does.
+    if errors.is_empty() {
+        for ((source, _), (rows, _)) in IMPORTED.iter().zip(&world.histories) {
+            let Some(last) = rows.last() else { continue };
+            let ledger = &config.sources[*source].ledger;
+            let books = posted(&build, ledger, date(9999, 12, 31));
+            if books != last.3 {
+                return Err(format!("{source} ends at {} at the bank and at {books} in the books", last.3));
+            }
+        }
+    }
+
+    // "The same inputs and `--as-of` give byte-identical journals."
+    let again = world.build(&one_file)?;
+    if (&again.journal, &again.forecast) != (&build.journal, &build.forecast)
+        || again.findings.render(true) != build.findings.render(true)
+    {
+        return Err("building twice gives two results".to_string());
+    }
+
+    // "The order of rules and the files they're in never matter."
+    let mut order: Vec<&String> = world.rules.iter().collect();
+    rng.shuffle(&mut order);
+    let mut files: Vec<(String, String)> = (0..3).map(|k| (format!("config/rules/{k}.toml"), String::new())).collect();
+    for piece in order {
+        files[rng.below(3)].1.push_str(piece);
+    }
+    let moved = world.build(&files)?;
+    if (&moved.journal, &moved.forecast) != (&build.journal, &build.forecast) {
+        let first =
+            |a: &str, b: &str| a.lines().zip(b.lines()).find(|(x, y)| x != y).map(|(x, y)| format!("{x:?} vs {y:?}"));
+        let difference = first(&build.journal, &moved.journal).or_else(|| first(&build.forecast, &moved.forecast));
+        let files: Vec<String> = files.iter().map(|(file, text)| format!("{file}:{text}")).collect();
+        return Err(format!("the journals depend on where the rules are: {difference:?}\n{}", files.join("\n")));
+    }
+    Ok(())
+}
+
+/// Checks `seeds` worlds, small ones first, and returns the first that
+/// breaks a promise, which is then among the smallest that do.
+fn check_worlds(wild: bool, seeds: u64) -> Option<String> {
+    for seed in 0..seeds {
+        let mut rng = Rng::new(if wild { seed + 1_000_000 } else { seed });
+        let size = 1 + usize::try_from(seed * 12 / seeds).expect("at most 12");
+        let world = match world(&mut rng, size, wild) {
+            Ok(world) => world,
+            Err(problem) => return Some(format!("seed {seed}: before any rules, {problem}")),
+        };
+        let checked = std::panic::catch_unwind(AssertUnwindSafe(|| check_world(&world, !wild, &mut rng)));
+        let problem = match checked {
+            Ok(Ok(())) => continue,
+            Ok(Err(problem)) => problem,
+            Err(_) => "the build panicked".to_string(),
+        };
+        return Some(format!("seed {seed}: {problem}\n{}", world.describe()));
+    }
+    None
+}
+
+/// Books from inputs with nothing wrong in them build without errors, and
+/// keep every promise `check_world` knows.
+#[test]
+fn sound_inputs_build_without_errors_and_keep_the_specs_promises() {
+    if let Some(report) = check_worlds(false, 300) {
+        panic!("{report}");
+    }
+}
+
+/// Rules that disagree, transfers with one side, ignored purchases and
+/// hand-written transactions that don't add up are reported, and the books
+/// still keep every promise.
+#[test]
+fn unsound_inputs_are_reported_and_the_books_still_keep_the_specs_promises() {
+    if let Some(report) = check_worlds(true, 300) {
+        panic!("{report}");
     }
 }
