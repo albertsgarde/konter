@@ -61,21 +61,12 @@ pub struct Posting {
     pub commodity: String,
     /// Balance assertion: the account's balance after this posting.
     pub assert_balance: Option<Decimal>,
-    /// Price in another commodity for the whole posting (`@@`).
-    pub total_cost: Option<(Decimal, String)>,
     pub comment: Option<String>,
 }
 
 impl Posting {
     pub fn new(account: impl Into<String>, amount: Decimal, commodity: impl Into<String>) -> Posting {
-        Posting {
-            account: account.into(),
-            amount,
-            commodity: commodity.into(),
-            assert_balance: None,
-            total_cost: None,
-            comment: None,
-        }
+        Posting { account: account.into(), amount, commodity: commodity.into(), assert_balance: None, comment: None }
     }
 }
 

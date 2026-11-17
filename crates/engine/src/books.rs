@@ -53,12 +53,7 @@ pub fn assemble(
         };
         let mut sums: BTreeMap<&str, Decimal> = BTreeMap::new();
         for p in &tx.postings {
-            match &p.total_cost {
-                Some((cost, commodity)) => {
-                    *sums.entry(commodity).or_default() += if p.amount.is_sign_negative() { -cost } else { *cost }
-                }
-                None => *sums.entry(&p.commodity).or_default() += p.amount,
-            }
+            *sums.entry(&p.commodity).or_default() += p.amount;
         }
         let off: Vec<String> = sums.iter().filter(|(_, v)| !v.is_zero()).map(|(c, v)| fmt_amount(*v, c)).collect();
         if !off.is_empty() {

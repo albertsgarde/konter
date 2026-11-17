@@ -42,9 +42,6 @@ pub fn render_transaction(out: &mut String, tx: &LedgerTransaction) {
         let amount = fmt_amount(p.amount, &p.commodity);
         let pad = width - p.account.chars().count();
         let _ = write!(out, "    {}{}  {:>16}", p.account, " ".repeat(pad), amount);
-        if let Some((cost, commodity)) = &p.total_cost {
-            let _ = write!(out, " @@ {}", fmt_amount(*cost, commodity));
-        }
         if let Some(b) = p.assert_balance {
             let _ = write!(out, " = {}", fmt_amount(b, &p.commodity));
         }
