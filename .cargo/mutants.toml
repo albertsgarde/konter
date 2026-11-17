@@ -1,0 +1,33 @@
+# For the occasional mutation run of the engine: `cargo mutants -p konter-engine`.
+# It changes the engine one small piece at a time and lists the changes that
+# no test notices.
+
+# Every crate's tests exercise the engine, so all of them run for each change.
+test_package = ["konter-engine", "konter", "konter-diagnostics", "konter-repo", "konter-report"]
+
+# `mutants.out` goes in target/, which is ignored.
+output = "target"
+
+# Changes after which nothing is different, so no test can notice them. They
+# are matched by line and column: when the code moves, one shows up as missed
+# again, and its line here has to follow it.
+exclude_re = [
+    # A leg never goes to its own source, so `from < to` is `from <= to`.
+    'transfers\.rs:28:76: replace < with <= in pair',
+    'transfers\.rs:68:40: replace < with <= in complete',
+    'transfers\.rs:78:76: replace < with <= in complete',
+    # `complete` returns early when there's nothing to gain. Going on instead
+    # finds nothing, and the test for "nothing to gain" is the same both ways round.
+    'transfers\.rs:68:40: replace < with > in complete',
+    'transfers\.rs:68:54: replace == with != in complete',
+    'transfers\.rs:69:22: delete ! in complete',
+    'transfers\.rs:69:57: replace \|\| with && in complete',
+    'transfers\.rs:71:25: replace \|\| with && in complete',
+    # Data that ends on --as-of is 0 days old, which is never stale.
+    'pipeline\.rs:80:31: replace < with <= in assemble',
+    # Two exports with as many rows on a day have the same rows on it, in the
+    # same order: either can place them.
+    'merge\.rs:287:48: replace > with >= in deduplicate',
+    # Only differs for a credit of nothing above a price below nothing.
+    'subscriptions\.rs:493:34: replace > with >= in check',
+]
