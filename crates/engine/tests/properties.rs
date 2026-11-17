@@ -1,18 +1,19 @@
 //! Property tests: invariants from docs/spec.md, checked on many generated
 //! inputs instead of a few hand-picked ones. Small inputs are enumerated
-//! exhaustively, smallest first, so a failure names a minimal case; larger
-//! ones come from a seeded generator, so every failure can be replayed. They
-//! need no dependencies. The ones that fail today are ignored, like those in
-//! breakage.rs: `cargo test -p konter-engine --test properties -- --ignored`.
+//! exhaustively, smallest first, so a failure names a minimal case. Larger
+//! ones are generated anew on every run, and one that fails is saved in
+//! tests/cases/ and checked first on every run after it (`check_cases`).
+//! The ones that fail today are ignored, like those in breakage.rs:
+//! `cargo test -p konter-engine --test properties -- --ignored`.
 
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
-use std::panic::AssertUnwindSafe;
 
 use common::{
-    NORDEA, Rng, build, config, danish, nordea_csv, nordea_rel, nordea_rel_of, posted, rules, try_build_with,
+    NORDEA, Rng, build, check_cases, config, danish, nordea_csv, nordea_rel, nordea_rel_of, posted, rules,
+    try_build_with,
 };
 use jiff::civil::{Date, date};
 use konter_engine::config::Config;
@@ -25,6 +26,7 @@ use konter_engine::sources::{self, SourceData};
 use konter_engine::tags;
 use konter_engine::transfers::{Leg, pair};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 
 // ── Transfer pairing (docs/spec.md §6) ─────────────────────────────────
 
@@ -98,17 +100,30 @@ fn small_cases(max_legs: usize, days: i8, mut f: impl FnMut(&[Leg])) {
     }
 }
 
+/// Legs to pair, as a case is saved: (from, to, day in January, amount).
+#[derive(Serialize, Deserialize)]
+struct Legs {
+    legs: Vec<(String, String, i8, i64)>,
+}
+
+impl Legs {
+    fn legs(&self) -> Vec<Leg> {
+        self.legs.iter().enumerate().map(|(n, (from, to, day, amount))| leg(from, to, *day, *amount, n)).collect()
+    }
+}
+
 /// Up to 10 legs between three accounts over a month.
-fn random_legs(rng: &mut Rng) -> Vec<Leg> {
+fn random_legs(rng: &mut Rng, _size: usize) -> Legs {
     let accounts = ["a", "b", "c"];
-    (0..1 + rng.below(10))
-        .map(|k| {
+    let legs = (0..1 + rng.below(10))
+        .map(|_| {
             let from = *rng.pick(&accounts);
             let to = *rng.pick(&accounts.iter().copied().filter(|a| *a != from).collect::<Vec<_>>());
             let amount = *rng.pick(&[-500, 500, -300, 300]);
-            leg(from, to, 1 + i8::try_from(rng.below(28)).expect("below 28"), amount, k)
+            (from.to_string(), to.to_string(), 1 + i8::try_from(rng.below(28)).expect("below 28"), amount)
         })
-        .collect()
+        .collect();
+    Legs { legs }
 }
 
 /// What pair() must always do: pair each leg at most once, and only legs
@@ -142,13 +157,10 @@ fn pairs_are_opposite_legs_within_the_window() {
             }
         });
     }
-    let mut rng = Rng::new(1);
-    for _ in 0..5000 {
-        let legs = random_legs(&mut rng);
-        if let Err(e) = check_pairs(&legs, 5) {
-            panic!("{e}\n{}", describe(&legs));
-        }
-    }
+    check_cases("pairs-fit", 5000, random_legs, |case| {
+        let legs = case.legs();
+        check_pairs(&legs, 5).map_err(|e| format!("{e}\n{}", describe(&legs)))
+    });
 }
 
 /// "An unpaired side is an error inside both accounts' covered dates": so
@@ -164,12 +176,15 @@ fn pairing_pairs_as_many_legs_as_can_be_paired() {
             }
         });
     }
-    let mut rng = Rng::new(2);
-    for _ in 0..5000 {
-        let legs = random_legs(&mut rng);
-        let (pairs, _) = pair(&legs, 5);
-        assert_eq!(pairs.len(), most_pairs(&legs, 5), "\n{}", describe(&legs));
-    }
+    check_cases("pairs-most", 5000, random_legs, |case| {
+        let legs = case.legs();
+        let (pairs, best) = (pair(&legs, 5).0.len(), most_pairs(&legs, 5));
+        if pairs == best {
+            Ok(())
+        } else {
+            Err(format!("{pairs} pairs where {best} are possible\n{}", describe(&legs)))
+        }
+    });
 }
 
 // ── Merging overlapping exports (docs/spec.md §4) ──────────────────────
@@ -177,15 +192,15 @@ fn pairing_pairs_as_many_legs_as_can_be_paired() {
 /// One row of a bank history: (day in January, amount, description, balance after).
 type Row = (i8, Decimal, &'static str, Decimal);
 
-/// A week on an account with a running balance. Few distinct amounts, so the
-/// same day, amount and balance come up again, as with money collected and
-/// passed on.
-fn history(rng: &mut Rng) -> Vec<Row> {
+/// Up to a week on an account with a running balance. Few distinct amounts,
+/// so the same day, amount and balance come up again, as with money collected
+/// and passed on.
+fn history(rng: &mut Rng, days: i8) -> Vec<Row> {
     const KINDS: [(i64, &str); 5] =
         [(100, "MobilePay Alice"), (100, "MobilePay Carol"), (-100, "Club dinner"), (-50, "Groceries"), (50, "Refund")];
     let mut balance = Decimal::from(1000);
     let mut rows = Vec::new();
-    for day in 1..=7 {
+    for day in 1..=days {
         for _ in 0..rng.below(4) {
             let (amount, what) = *rng.pick(&KINDS);
             balance += Decimal::from(amount);
@@ -236,15 +251,36 @@ fn export_csv(rows: &[Row]) -> String {
     nordea_csv(&rows)
 }
 
-fn merge(config: &Config, rows: &[Row], exports: &[Range<usize>]) -> (SourceData, Findings) {
+/// A history in exports, as a case is saved: the text of the files.
+#[derive(Serialize, Deserialize)]
+struct Exports {
+    /// One export of the whole history.
+    whole: String,
+    /// Exports that together cover it.
+    parts: Vec<String>,
+}
+
+/// A history of up to `size` days, at most a week, and exports of it.
+fn split_history(rng: &mut Rng, size: usize, mid_day: bool) -> Exports {
+    let days = i8::try_from(size.min(7)).expect("at most 7");
+    let rows = loop {
+        let rows = history(rng, days);
+        if !rows.is_empty() {
+            break rows;
+        }
+    };
+    let parts = exports(rng, &rows, mid_day).into_iter().map(|range| export_csv(&rows[range])).collect();
+    Exports { whole: export_csv(&rows), parts }
+}
+
+fn merge(config: &Config, exports: &[String]) -> (SourceData, Findings) {
     let mut findings = Findings::default();
     let raw = exports
         .iter()
         .enumerate()
-        .map(|(k, range)| {
+        .map(|(k, export)| {
             let rel = nordea_rel(&format!("2026-02-{:02} 10.00.00", k + 1));
-            sources::parse_raw(config, "bank:a", &rel, &export_csv(&rows[range.clone()]), None)
-                .expect("the generated export parses")
+            sources::parse_raw(config, "bank:a", &rel, export, None).expect("the generated export parses")
         })
         .collect();
     let data = sources::merge_source(config, "bank:a", raw, &mut findings);
@@ -270,53 +306,25 @@ fn merged_rows(data: &SourceData) -> Vec<String> {
 /// "Any number of overlapping files is fine; merging sorts them out": the
 /// same history, however it's split into exports, gives the same
 /// transactions with the same IDs as one export of all of it, and no errors.
-/// Returns the smallest counterexample found.
-fn check_merging(mid_day: bool, seeds: u64) -> Option<String> {
+fn check_merging(case: &Exports) -> Result<(), String> {
     let config = config(NORDEA);
-    let mut smallest: Option<(usize, String)> = None;
-    for seed in 0..seeds {
-        let mut rng = Rng::new(seed);
-        let rows = history(&mut rng);
-        if rows.is_empty() {
-            continue;
-        }
-        let exports = exports(&mut rng, &rows, mid_day);
-        // One export of the whole history.
-        let (alone, _) = merge(&config, &rows, std::slice::from_ref(&(0..rows.len())));
-        let (split, findings) = merge(&config, &rows, &exports);
-        let (want, got) = (merged_rows(&alone), merged_rows(&split));
-        if want == got && !findings.has_errors() {
-            continue;
-        }
-        if smallest.as_ref().is_some_and(|(n, _)| *n <= rows.len()) {
-            continue;
-        }
-        let history: Vec<String> =
-            rows.iter().map(|r| format!("  day {}: {} {:?}, balance {}", r.0, r.1, r.2, r.3)).collect();
-        let report = format!(
-            "seed {seed}\nhistory:\n{}\nexports (row ranges): {exports:?}\nexpected:\n  {}\ngot:\n  {}\n{}",
-            history.join("\n"),
-            want.join("\n  "),
-            got.join("\n  "),
-            findings.render(true)
-        );
-        smallest = Some((rows.len(), report));
+    let (alone, _) = merge(&config, std::slice::from_ref(&case.whole));
+    let (split, findings) = merge(&config, &case.parts);
+    let (want, got) = (merged_rows(&alone), merged_rows(&split));
+    if want == got && !findings.has_errors() {
+        return Ok(());
     }
-    smallest.map(|(_, report)| report)
+    Err(format!("expected:\n  {}\ngot:\n  {}\n{}", want.join("\n  "), got.join("\n  "), findings.render(true)))
 }
 
 #[test]
 fn merging_whole_day_exports_is_like_merging_one() {
-    if let Some(report) = check_merging(false, 500) {
-        panic!("{report}");
-    }
+    check_cases("merging-whole-days", 500, |rng, size| split_history(rng, size, false), check_merging);
 }
 
 #[test]
 fn merging_exports_taken_during_the_day_is_like_merging_one() {
-    if let Some(report) = check_merging(true, 500) {
-        panic!("{report}");
-    }
+    check_cases("merging-mid-day", 500, |rng, size| split_history(rng, size, true), check_merging);
 }
 
 // ── Order-independent rules (docs/spec.md §1) ──────────────────────────
@@ -436,23 +444,32 @@ fn subscriptions_due_the_same_day_dont_depend_on_order() {
 /// file, whether written as a number or a string.
 #[test]
 fn amounts_read_back_exactly() {
-    #[derive(serde::Deserialize)]
+    #[derive(Deserialize)]
     struct InRules {
         amount: Amount,
     }
-    let mut rng = Rng::new(4);
-    for _ in 0..5000 {
+    /// An amount, as a case is saved: `digits` × 10^-`decimals`.
+    #[derive(Serialize, Deserialize)]
+    struct Written {
+        digits: i64,
+        decimals: u32,
+    }
+    let generate = |rng: &mut Rng, _size: usize| {
         let digits = 1 + u32::try_from(rng.below(13)).expect("below 13");
         let mantissa = i64::try_from(rng.next() % 10u64.pow(digits)).expect("at most 13 digits");
         let sign = if rng.below(2) == 0 { 1 } else { -1 };
-        let d = Decimal::new(sign * mantissa, u32::try_from(rng.below(3)).expect("below 3"));
+        Written { digits: sign * mantissa, decimals: u32::try_from(rng.below(3)).expect("below 3") }
+    };
+    check_cases("amounts", 5000, generate, |case| {
+        let d = Decimal::new(case.digits, case.decimals);
         assert_eq!(parse_plain(&fmt_num(d)).expect("what fmt_num writes parses"), d, "{d}");
         assert_eq!(parse_danish(&danish(d)).expect("Danish notation parses"), d, "{}", danish(d));
         for written in [fmt_num(d), format!("\"{}\"", fmt_num(d))] {
             let read: InRules = toml::from_str(&format!("amount = {written}")).expect("the amount reads in the rules");
             assert_eq!(read.amount.0, d, "amount = {written}");
         }
-    }
+        Ok(())
+    });
 }
 
 // ── Whole builds (docs/spec.md §1 and §7) ──────────────────────────────
@@ -649,52 +666,35 @@ split = [
     "\n[[rule]]\nname = \"dinner-moved\"\nwhen = { source = \"bank:a\", description = \"Dinner\" }\npriority = 9\ntransfer = \"bank:b\"\n",
 ];
 
-/// Everything a build is made from.
+/// Everything a build is made from, as a case is saved.
+#[derive(Serialize, Deserialize)]
 struct World {
+    /// Whether nothing in it is wrong, so that it builds without errors.
+    sound: bool,
+    as_of: Date,
+    /// Decides which files the rules are moved to, to see that it doesn't matter.
+    placement: u32,
     config: String,
-    /// Each imported account's history, and the exports that cover it.
-    histories: Vec<(Vec<Row>, Vec<Range<usize>>)>,
     /// Pieces of rule files. Their order and the files they're in shouldn't matter.
     rules: Vec<String>,
     /// config/transactions.toml.
     transactions: String,
-    as_of: Date,
+    /// Where each imported account ends at the bank: (source, balance).
+    ends: Vec<(String, String)>,
+    /// The raw files: (source, path, text).
+    files: Vec<(String, String, String)>,
 }
 
 impl World {
-    /// The raw files: (source, path, text).
-    fn files(&self) -> Vec<(&'static str, String, String)> {
-        let mut files = Vec::new();
-        for ((source, number), (rows, exports)) in IMPORTED.iter().zip(&self.histories) {
-            for (k, range) in exports.iter().enumerate() {
-                let rel = nordea_rel_of(number, &format!("2026-02-{:02} 10.00.00", k + 1));
-                files.push((*source, rel, export_csv(&rows[range.clone()])));
-            }
-        }
-        files
-    }
-
     /// Builds the books with the rules in `rule_files`: (file, text).
     fn build(&self, rule_files: &[(String, String)]) -> Result<Build, String> {
         let config = config(&self.config);
         let rule_files = rule_files.iter().map(|(file, text)| (file.as_str(), text.as_str()));
         let rules = Rules::from_files(rule_files, &config).map_err(|e| format!("the rules don't load: {e:#}"))?;
-        let files = self.files();
         let files: Vec<(&str, &str, &str)> =
-            files.iter().map(|(s, rel, text)| (*s, rel.as_str(), text.as_str())).collect();
+            self.files.iter().map(|(source, rel, text)| (source.as_str(), rel.as_str(), text.as_str())).collect();
         try_build_with(&config, rules, &ACCOUNTS, &self.transactions, &files, self.as_of)
             .map_err(|e| format!("the books don't build: {e:#}"))
-    }
-
-    fn describe(&self) -> String {
-        let mut out = format!("as of {}\n", self.as_of);
-        for ((source, _), (rows, exports)) in IMPORTED.iter().zip(&self.histories) {
-            out.push_str(&format!("{source}, in exports of rows {exports:?}:\n"));
-            for (day, amount, what, balance) in rows {
-                out.push_str(&format!("  day {day}: {amount} {what:?}, balance {balance}\n"));
-            }
-        }
-        format!("{out}rules:{}\ntransactions:{}", self.rules.concat(), self.transactions)
     }
 }
 
@@ -832,9 +832,10 @@ postings = [
 /// Adds up to two pins or later marks to the world's rules. Unless it's
 /// `wild` they're on purchases that nothing else depends on, and a pin only
 /// books to an account.
-fn pin_and_mark(rng: &mut Rng, world: &mut World, wild: bool) -> Result<(), String> {
-    // Pins and later marks go by ID, and IDs come from a build.
-    let build = world.build(&[])?;
+fn pin_and_mark(rng: &mut Rng, world: &mut World, wild: bool) {
+    // Pins and later marks go by ID, and IDs come from a build. If there's
+    // none to be had, checking the world says why.
+    let Ok(build) = world.build(&[]) else { return };
     let all: Vec<(&str, &str)> = build
         .loaded
         .sources
@@ -869,24 +870,25 @@ fn pin_and_mark(rng: &mut Rng, world: &mut World, wild: bool) -> Result<(), Stri
     if wild && rng.below(4) == 0 {
         world.rules.push("\n[pin.\"ba-2026-01-31-000000\"]\naccount = \"expenses:gifts\"\n".to_string());
     }
-    Ok(())
 }
 
 /// A world of the given `size`. Unless it's `wild`, nothing in it is wrong:
 /// the rules agree, every transfer has both its sides, and what's written by
 /// hand adds up. A wild one also has some of what shouldn't be there.
-fn world(rng: &mut Rng, size: usize, wild: bool) -> Result<World, String> {
+fn world(rng: &mut Rng, size: usize, wild: bool) -> World {
     let days = i8::try_from((2 * size).min(24)).expect("at most 24");
     let extremes = rng.below(4) == 0;
-    let histories: Vec<(Vec<Row>, Vec<Range<usize>>)> = histories(rng, days, extremes)
-        .into_iter()
-        .map(|rows| {
-            // Half of them taken during the day, as exports usually are.
-            let mid_day = rng.below(2) == 0;
-            let exports = if rows.is_empty() { Vec::new() } else { exports(rng, &rows, mid_day) };
-            (rows, exports)
-        })
-        .collect();
+    let (mut files, mut ends) = (Vec::new(), Vec::new());
+    for ((source, number), rows) in IMPORTED.iter().zip(histories(rng, days, extremes)) {
+        let Some(last) = rows.last() else { continue };
+        ends.push(((*source).to_string(), last.3.to_string()));
+        // Half of them taken during the day, as exports usually are.
+        let mid_day = rng.below(2) == 0;
+        for (k, range) in exports(rng, &rows, mid_day).into_iter().enumerate() {
+            let rel = nordea_rel_of(number, &format!("2026-02-{:02} 10.00.00", k + 1));
+            files.push(((*source).to_string(), rel, export_csv(&rows[range])));
+        }
+    }
 
     let mut rules: Vec<String> = TOPICS.iter().filter(|_| rng.below(4) > 0).map(|topic| (*topic).to_string()).collect();
     if rng.below(4) > 0 {
@@ -910,10 +912,10 @@ fn world(rng: &mut Rng, size: usize, wild: bool) -> Result<World, String> {
     }
     let as_of =
         if wild && rng.below(4) == 0 { date(2026, 1, 15) } else { *rng.pick(&[date(2026, 1, 31), date(2026, 3, 1)]) };
-    let mut world = World { config, histories, rules, transactions, as_of };
-
-    pin_and_mark(rng, &mut world, wild)?;
-    Ok(world)
+    let placement = u32::try_from(rng.below(1 << 30)).expect("below 2^30");
+    let mut world = World { sound: !wild, as_of, placement, config, rules, transactions, ends, files };
+    pin_and_mark(rng, &mut world, wild);
+    world
 }
 
 /// The errors among a build's findings, as `category: message`.
@@ -986,13 +988,13 @@ fn books_add_up(build: &Build) -> Result<(), String> {
 }
 
 /// What docs/spec.md promises of every build, whatever the inputs are like.
-/// A `clean` world also builds without errors.
-fn check_world(world: &World, clean: bool, rng: &mut Rng) -> Result<(), String> {
+/// A sound world also builds without errors.
+fn check_world(world: &World) -> Result<(), String> {
     let config = config(&world.config);
     let one_file = [("config/rules.toml".to_string(), world.rules.concat())];
     let build = world.build(&one_file)?;
     let errors = errors(&build);
-    if clean && !errors.is_empty() {
+    if world.sound && !errors.is_empty() {
         return Err(format!("nothing is wrong with the inputs, but the build has errors:\n  {}", errors.join("\n  ")));
     }
 
@@ -1002,12 +1004,10 @@ fn check_world(world: &World, clean: bool, rng: &mut Rng) -> Result<(), String> 
     // "The bank is ground truth": without errors, each account ends where
     // the bank says it does.
     if errors.is_empty() {
-        for ((source, _), (rows, _)) in IMPORTED.iter().zip(&world.histories) {
-            let Some(last) = rows.last() else { continue };
-            let ledger = &config.sources[*source].ledger;
-            let books = posted(&build, ledger, date(9999, 12, 31));
-            if books != last.3 {
-                return Err(format!("{source} ends at {} at the bank and at {books} in the books", last.3));
+        for (source, end) in &world.ends {
+            let books = posted(&build, &config.sources[source].ledger, date(9999, 12, 31));
+            if books != decimal(end) {
+                return Err(format!("{source} ends at {end} at the bank and at {books} in the books"));
             }
         }
     }
@@ -1021,6 +1021,7 @@ fn check_world(world: &World, clean: bool, rng: &mut Rng) -> Result<(), String> 
     }
 
     // "The order of rules and the files they're in never matter."
+    let mut rng = Rng::new(u64::from(world.placement));
     let mut order: Vec<&String> = world.rules.iter().collect();
     rng.shuffle(&mut order);
     let mut files: Vec<(String, String)> = (0..3).map(|k| (format!("config/rules/{k}.toml"), String::new())).collect();
@@ -1038,34 +1039,11 @@ fn check_world(world: &World, clean: bool, rng: &mut Rng) -> Result<(), String> 
     Ok(())
 }
 
-/// Checks `seeds` worlds, small ones first, and returns the first that
-/// breaks a promise, which is then among the smallest that do.
-fn check_worlds(wild: bool, seeds: u64) -> Option<String> {
-    for seed in 0..seeds {
-        let mut rng = Rng::new(if wild { seed + 1_000_000 } else { seed });
-        let size = 1 + usize::try_from(seed * 12 / seeds).expect("at most 12");
-        let world = match world(&mut rng, size, wild) {
-            Ok(world) => world,
-            Err(problem) => return Some(format!("seed {seed}: before any rules, {problem}")),
-        };
-        let checked = std::panic::catch_unwind(AssertUnwindSafe(|| check_world(&world, !wild, &mut rng)));
-        let problem = match checked {
-            Ok(Ok(())) => continue,
-            Ok(Err(problem)) => problem,
-            Err(_) => "the build panicked".to_string(),
-        };
-        return Some(format!("seed {seed}: {problem}\n{}", world.describe()));
-    }
-    None
-}
-
 /// Books from inputs with nothing wrong in them build without errors, and
 /// keep every promise `check_world` knows.
 #[test]
 fn sound_inputs_build_without_errors_and_keep_the_specs_promises() {
-    if let Some(report) = check_worlds(false, 300) {
-        panic!("{report}");
-    }
+    check_cases("sound-books", 300, |rng, size| world(rng, size, false), check_world);
 }
 
 /// Rules that disagree, transfers with one side, ignored purchases and
@@ -1073,7 +1051,5 @@ fn sound_inputs_build_without_errors_and_keep_the_specs_promises() {
 /// still keep every promise.
 #[test]
 fn unsound_inputs_are_reported_and_the_books_still_keep_the_specs_promises() {
-    if let Some(report) = check_worlds(true, 300) {
-        panic!("{report}");
-    }
+    check_cases("unsound-books", 300, |rng, size| world(rng, size, true), check_world);
 }

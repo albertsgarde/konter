@@ -4,6 +4,9 @@
 #![allow(dead_code, reason = "each test binary uses its own part of this")]
 
 use std::collections::BTreeMap;
+use std::hash::{BuildHasher, DefaultHasher, Hash, Hasher, RandomState};
+use std::panic::AssertUnwindSafe;
+use std::path::{Path, PathBuf};
 
 use jiff::civil::Date;
 use konter_engine::config::Config;
@@ -13,6 +16,8 @@ use konter_engine::pipeline::{self, Build};
 use konter_engine::rules::Rules;
 use konter_engine::sources::{self, Loaded};
 use rust_decimal::Decimal;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// One Nordea account (`bank:a`) imported from CSV, and books from 2026.
 pub const NORDEA: &str = r#"
@@ -166,4 +171,73 @@ impl Rng {
             items.swap(i, self.below(i + 1));
         }
     }
+}
+
+/// The variable that gives a run of `check_cases` its seed.
+const SEED: &str = "KONTER_TEST_SEED";
+
+/// Checks `property` on generated cases: first on every case saved in
+/// `tests/cases/<name>/`, then on `fresh` new ones from `generate`. It gets a
+/// size from 1 to 12 that grows along the way, so the first case to fail is
+/// among the smallest that do.
+///
+/// The new cases differ from run to run, so a run can fail where the one
+/// before it passed. It can't go the other way: a new case that fails is
+/// saved before the test fails, and fails every run from then on until
+/// what's wrong is fixed. What's saved is the case and not its seed, so it
+/// stays the same case when the generator changes.
+pub fn check_cases<C: Serialize + DeserializeOwned>(
+    name: &str,
+    fresh: u64,
+    generate: impl Fn(&mut Rng, usize) -> C,
+    property: impl Fn(&C) -> Result<(), String>,
+) {
+    // A property that panics has failed too.
+    let check = |case: &C| {
+        std::panic::catch_unwind(AssertUnwindSafe(|| property(case)))
+            .unwrap_or_else(|_| Err("the property panicked: its message is above".to_string()))
+    };
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cases").join(name);
+    for path in saved_cases(&dir) {
+        let text = std::fs::read_to_string(&path).expect("a saved case is read");
+        let case: C = toml::from_str(&text).unwrap_or_else(|e| {
+            panic!(
+                "{} isn't a case of {name} (any more?): write it again in today's form, or remove it\n{e}",
+                path.display()
+            )
+        });
+        if let Err(problem) = check(&case) {
+            panic!("{}, saved when it failed, fails:\n{problem}", path.display());
+        }
+    }
+    let seed = match std::env::var(SEED) {
+        Ok(seed) => seed.parse().unwrap_or_else(|_| panic!("{SEED} is a whole number, not {seed:?}")),
+        // Random, and std has nothing shorter.
+        Err(_) => RandomState::new().build_hasher().finish(),
+    };
+    for n in 0..fresh {
+        let size = 1 + usize::try_from(n * 12 / fresh).expect("at most 12");
+        let case = generate(&mut Rng::new(seed.wrapping_add(n)), size);
+        let Err(problem) = check(&case) else { continue };
+        let text = toml::to_string_pretty(&case).expect("a case is written as TOML");
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let path = dir.join(format!("{:016x}.toml", hasher.finish()));
+        std::fs::create_dir_all(&dir).expect("the folder for saved cases is made");
+        std::fs::write(&path, text).expect("the failing case is saved");
+        panic!(
+            "{problem}\n\nThe case is saved as {} and runs first from now on: commit it with the fix.\n\
+             ({SEED}={seed} generates it again as case {n} of {name}, until the generator changes.)",
+            path.display()
+        );
+    }
+}
+
+/// The cases saved in `dir`, in the order of their names.
+fn saved_cases(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut paths: Vec<PathBuf> = entries.map(|entry| entry.expect("a saved case is listed").path()).collect();
+    paths.retain(|path| path.extension().is_some_and(|extension| extension == "toml"));
+    paths.sort();
+    paths
 }
