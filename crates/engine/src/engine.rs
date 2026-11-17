@@ -730,6 +730,21 @@ mod tests {
         assert!(tx.comments.is_empty());
     }
 
+    /// A purchase the bank booked on another day than it was made is tagged
+    /// with the day it was made, and only then.
+    #[test]
+    fn the_purchase_date_is_tagged_when_it_isnt_the_booking_date() {
+        let purchased = |on: Option<jiff::civil::Date>| {
+            let mut t = card_payment("COOP APP", None);
+            t.transaction_date = on;
+            let tags = header(&t, "unmatched", 0, None).tags;
+            tags.into_iter().find(|(tag, _)| tag == tags::PURCHASED).map(|(_, day)| day)
+        };
+        assert_eq!(purchased(Some(jiff::civil::date(2025, 12, 30))).as_deref(), Some("2025-12-30"));
+        assert_eq!(purchased(Some(jiff::civil::date(2026, 1, 1))), None);
+        assert_eq!(purchased(None), None);
+    }
+
     /// The report gets the bank's text from the comment, as a JSON string.
     /// Rust's own quoting (`{:?}`) isn't JSON: it writes a non-breaking space
     /// as `\u{a0}`, which no JSON parser reads.
