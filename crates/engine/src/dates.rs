@@ -192,4 +192,25 @@ mod tests {
         assert_eq!(t.a.0, date(2025, 1, 1));
         assert_eq!(t.b.0, date(2025, 2, 3));
     }
+
+    #[test]
+    fn a_period_is_at_most_a_hundred_years() {
+        assert_eq!(Period::parse("100 years").expect("a century is fine"), Period::Months(1200));
+        assert_eq!(Period::parse("36600 days").expect("a century of days is fine"), Period::Days(36_600));
+        for long in ["101 years", "1201 months", "36601 days", "5229 weeks"] {
+            let error = Period::parse(long).expect_err("that's more than a century").to_string();
+            assert!(error.contains("is too long (at most 100 years)"), "{error}");
+        }
+    }
+
+    #[test]
+    fn something_else_where_a_date_goes_says_what_a_date_looks_like() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Dated {
+            #[expect(dead_code, reason = "only read to see it's refused")]
+            first: ConfigDate,
+        }
+        let error = toml::from_str::<Dated>("first = 5").expect_err("5 is no date").to_string();
+        assert!(error.contains("a date like 2025-01-01"), "{error}");
+    }
 }

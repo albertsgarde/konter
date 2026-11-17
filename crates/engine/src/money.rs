@@ -139,7 +139,7 @@ mod tests {
 
     use super::*;
 
-    #[derive(serde::Deserialize)]
+    #[derive(Debug, serde::Deserialize)]
     struct Priced {
         amount: Amount,
     }
@@ -213,5 +213,12 @@ mod tests {
         assert_eq!(fmt_num(Decimal::from_str("12.5").expect("a decimal")), "12.50");
         assert_eq!(fmt_num(Decimal::from_str("0.125").expect("a decimal")), "0.125");
         assert_eq!(canonical(Decimal::from_str("4320.00").expect("a decimal")), "4320");
+    }
+
+    #[test]
+    fn an_amount_is_written_with_two_decimals_and_says_what_it_takes() {
+        assert_eq!(Amount(Decimal::new(125, 1)).to_string(), "12.50");
+        let error = toml::from_str::<Priced>("amount = true").expect_err("true is no amount").to_string();
+        assert!(error.contains("an amount (number or string)"), "{error}");
     }
 }

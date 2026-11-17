@@ -269,4 +269,27 @@ mod tests {
         assert!(report.contains("EUR  (first: 2026-01-04 Bank 4)"), "{report}");
         assert!(!report.contains("✓ books"), "{report}");
     }
+
+    /// A balance assignment starts from where the account is after the
+    /// transaction's own earlier postings to it.
+    #[test]
+    fn a_balance_assignment_counts_the_transactions_earlier_postings() {
+        let manual = manual(
+            r#"
+            [[transaction]]
+            date = 2026-01-05
+            payee = "Moved and written off"
+            postings = [
+                { account = "expenses:x", amount = 10 },
+                { account = "expenses:x", balance = 0 },
+                { account = "equity:opening", rest = true },
+            ]
+            "#,
+        );
+        // The bank transaction left expenses:x at -1000.
+        let (books, report) = check(&manual, &[generated(1, 1000, 1000)]);
+        assert!(report.contains("2 transactions balance, 2 balance assertions hold"), "{report}");
+        let amounts: Vec<Decimal> = books[1].postings.iter().map(|p| p.amount).collect();
+        assert_eq!(amounts, [Decimal::from(10), Decimal::from(990), Decimal::from(-1000)]);
+    }
 }

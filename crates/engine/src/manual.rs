@@ -227,4 +227,26 @@ mod tests {
             assert!(error.contains(expected), "{accounts}: {error}");
         }
     }
+
+    #[test]
+    fn account_names_and_tags_hledger_would_read_differently_are_refused() {
+        for name in ["", " expenses:x", "expenses:x ", "expenses;x", "expenses\tx", "expenses:two  words"] {
+            let error = Manual::parse(&format!("accounts = [{name:?}]"), "").expect_err("the name is refused");
+            assert!(format!("{error:#}").contains("invalid account name"), "{name:?}: {error:#}");
+        }
+        Manual::parse("accounts = [\"expenses:two words\"]", "").expect("one space is fine");
+
+        let tagged = |tags: &str| {
+            let text = format!(
+                "[[transaction]]\ndate = 2026-01-05\npayee = \"Gift\"\ntags = {{ {tags} }}\n\
+                 postings = [{{ account = \"expenses:x\", amount = 5 }}, {{ account = \"assets:y\", rest = true }}]\n"
+            );
+            Manual::parse("accounts = []", &text)
+        };
+        tagged("to = \"a friend\"").expect("a tag with a value is fine");
+        for tags in ["\"two words\" = \"x\"", "to = \"here, there\"", "to = \"here; there\""] {
+            let error = tagged(tags).expect_err("the tag is refused");
+            assert!(format!("{error:#}").contains("invalid tag"), "{tags}: {error:#}");
+        }
+    }
 }
