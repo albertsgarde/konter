@@ -825,7 +825,7 @@ fn start_link(config: &Config, bank: &str, days: u64) -> Result<(String, fetch::
             format!("Enable Banking has no bank named {:?} in {} (see `konter banks`)", eb.aspsp, eb.country)
         })?;
     let max_secs = aspsp.get("maximum_consent_validity").and_then(|v| v.as_u64()).unwrap_or(90 * 86_400);
-    let now = fetch::now_secs();
+    let now = fetch::now_secs()?;
     let valid_until = fetch::rfc3339(now + (days * 86_400).min(max_secs));
     let state = sha256_hex(format!("{now}-{}", std::process::id()).as_bytes())[..16].to_string();
     let url = client.start_auth(&eb.aspsp, &eb.country, &valid_until, &state, &settings.redirect_url)?;

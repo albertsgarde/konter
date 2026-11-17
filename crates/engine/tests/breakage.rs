@@ -7,7 +7,7 @@ mod common;
 
 use std::panic::AssertUnwindSafe;
 
-use common::{NORDEA, build, config, nordea_csv, nordea_rel, posted, rules};
+use common::{NORDEA, build, config, nordea_csv, nordea_rel, posted, rules, try_build};
 use jiff::civil::date;
 use konter_engine::config::Config;
 use konter_engine::findings::Severity;
@@ -327,20 +327,74 @@ first = 2026-01-01
 prices = [{ from = 2026-01-01, amount = 1 }]
 "#,
         ),
+        (
+            "a subscription that ends on the last date there is",
+            r#"
+[[subscription]]
+name = "no-end"
+kind = "expense"
+account = "expenses:other"
+every = "1 month"
+first = 2026-01-01
+end = 9999-12-31
+prices = [{ from = 2026-01-01, amount = 1 }]
+"#,
+        ),
+        (
+            "a subscription paid for until after year 9999",
+            r#"
+[[subscription]]
+name = "prepaid"
+kind = "expense"
+account = "expenses:other"
+every = "1 month"
+first = 2026-01-01
+opening = 1000000
+prices = [{ from = 2026-01-01, amount = 1 }]
+"#,
+        ),
     ];
-    let mut panicked = Vec::new();
+    let (mut panicked, mut unreported) = (Vec::new(), Vec::new());
     for (what, text) in cases {
         // Refusing the rules would be fine too.
         let Ok(rules) = Rules::load_str(text, "config/rules.toml", config) else { continue };
         let accounts = ["expenses:groceries", "expenses:other"];
         let files = [("bank:a", rel.as_str(), csv.as_str())];
-        let result =
-            std::panic::catch_unwind(AssertUnwindSafe(|| build(config, rules, &accounts, &files, date(2026, 2, 1))));
-        if result.is_err() {
-            panicked.push(what);
+        let as_of = date(2026, 2, 1);
+        match std::panic::catch_unwind(AssertUnwindSafe(|| try_build(config, rules, &accounts, &files, as_of))) {
+            Err(_) => panicked.push(what),
+            // Reported: the build fails, or it finishes with an error among its findings.
+            Ok(Ok(build)) if !build.findings.has_errors() => unreported.push(what),
+            Ok(_) => {}
         }
     }
     assert!(panicked.is_empty(), "the build panicked on {panicked:?}");
+    assert!(unreported.is_empty(), "the build said nothing about {unreported:?}");
+}
+
+/// A schedule that runs past year 9999 fails the build, and the error names
+/// the subscription and where it is written.
+#[test]
+fn a_schedule_past_the_last_date_names_its_subscription() {
+    let config = &config(NORDEA);
+    let subscription = |more: &str| {
+        format!(
+            "[[subscription]]\nname = \"endless\"\nkind = \"expense\"\naccount = \"expenses:other\"\n\
+             every = \"1 month\"\nfirst = 2026-01-01\nprices = [{{ from = 2026-01-01, amount = 1 }}]\n{more}\n"
+        )
+    };
+    for (more, expected) in [
+        ("end = 9999-12-31", "`end` (9999-12-31) is the last date there is"),
+        ("opening = 1000000", "is past year 9999"),
+    ] {
+        let rules = rules(config, &[("config/rules/endless.toml", &subscription(more))]);
+        let Err(error) = try_build(config, rules, &["expenses:other"], &[], date(2026, 2, 1)) else {
+            panic!("the build went through with {more}");
+        };
+        let error = format!("{error:#}");
+        assert!(error.contains("subscription \"endless\" (config/rules/endless.toml): date out of range"), "{error}");
+        assert!(error.contains(expected), "{error}");
+    }
 }
 
 /// A rule's own `tags` could use the names konter writes itself, so a rule

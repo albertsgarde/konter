@@ -164,6 +164,7 @@ They describe what *should* happen on a schedule, so a missing payment shows up.
   - The other side goes to `liabilities:payable:<name>` (or `assets:receivable:<name>`).
   - Payments (`subscription = "<name>"`) settle it, so the balance is 0 when all is paid.
   - Fields: `every` (at most 100 years), `first`, `end` (last due date, inclusive), `prices` (history), `grace` (7 days), `notice`, `opening`.
+  - Dates end with year 9999. A schedule that has to be followed past it (an `end` on 9999-12-31, or enough paid ahead to reach it) is an error that names the subscription, and nothing is built.
 - **Checks:**
   - Deficit: the oldest unpaid due date is more than the grace period old.
   - More than one period paid ahead: paid twice?

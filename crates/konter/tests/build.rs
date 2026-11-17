@@ -358,7 +358,8 @@ fn subscriptions_with(
     let loaded = load::all_sources(&repo, &config, &mut findings).expect("the fixture's data loads");
     let mut generated = engine::generate(&config, &rules, &loaded, &mut findings);
     let states =
-        konter_engine::subscriptions::generate(&config, &rules.subscriptions, as_of, &mut generated, &mut findings);
+        konter_engine::subscriptions::generate(&config, &rules.subscriptions, as_of, &mut generated, &mut findings)
+            .map_err(|e| format!("{e:#}"))?;
     Ok((config, rules, generated, states, findings))
 }
 
@@ -419,7 +420,8 @@ prices = [{ from = 2026-01-01, amount = 1000 }]
     assert!(tagged(arrival).is_empty());
 
     // The forecast moves the money from the first due date that isn't paid.
-    let forecast = konter_engine::subscriptions::forecast(&config, &rules.subscriptions, &states, as_of);
+    let forecast = konter_engine::subscriptions::forecast(&config, &rules.subscriptions, &states, as_of)
+        .expect("the forecast is written");
     assert!(
         forecast.contains("~ every 1 months from 2026-06-15  pocket-money  ; pays:pocket-money\n    assets:bank:b   "),
         "{forecast}"
@@ -594,6 +596,7 @@ fn build_with(more: &str) -> konter_engine::pipeline::Build {
     let loaded = load::all_sources(&repo, &config, &mut findings).expect("the fixture's data loads");
     let manual = load::manual(&repo).expect("the fixture's transactions load");
     konter_engine::pipeline::assemble(&config, rules, loaded, &manual, date(2026, 2, 15), findings)
+        .expect("the fixture builds")
 }
 
 #[test]

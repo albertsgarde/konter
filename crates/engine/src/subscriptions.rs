@@ -15,7 +15,7 @@
 
 use std::fmt::Write as _;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use jiff::civil::Date;
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -205,16 +205,41 @@ impl Subscription {
         self.prices.iter().rev().find(|(from, _)| *from <= date).map(|p| p.1).unwrap_or(self.prices[0].1)
     }
 
+    /// Every due date from `first` on, whatever `end` says. It never runs
+    /// out: it ends in an error, where the dates do (year 9999).
+    fn schedule(&self) -> impl Iterator<Item = Result<Date>> + '_ {
+        (0..).map(|k| self.every.nth(self.first, k))
+    }
+
+    /// The first due date that `wanted` holds for, whatever `end` says.
+    fn first_due(&self, wanted: impl Fn(Date) -> bool) -> Result<Date> {
+        for due in self.schedule() {
+            let due = due?;
+            if wanted(due) {
+                return Ok(due);
+            }
+        }
+        unreachable!("the schedule ends in an error")
+    }
+
     /// Due dates from `first`, up to and including `until` (and `end`).
-    pub fn due_dates(&self, until: Date) -> Vec<Date> {
+    pub fn due_dates(&self, until: Date) -> Result<Vec<Date>> {
         let last = self.end.map_or(until, |e| e.min(until));
-        (0..).map(|k| self.every.nth(self.first, k)).take_while(|d| *d <= last).collect()
+        let mut dates = Vec::new();
+        for due in self.schedule() {
+            let due = due?;
+            if due > last {
+                break;
+            }
+            dates.push(due);
+        }
+        Ok(dates)
     }
 
     /// The first due date after `date`, if the subscription hasn't ended.
-    pub fn next_due(&self, date: Date) -> Option<Date> {
-        let next = (0..).map(|k| self.every.nth(self.first, k)).find(|d| *d > date)?;
-        self.end.is_none_or(|e| next <= e).then_some(next)
+    pub fn next_due(&self, date: Date) -> Result<Option<Date>> {
+        let next = self.first_due(|d| d > date)?;
+        Ok(self.end.is_none_or(|e| next <= e).then_some(next))
     }
 
     /// Signs a "credit" (paid minus due, positive = paid ahead) as a posting
@@ -245,30 +270,40 @@ impl Subscription {
     /// The due dates from `start` that payments settle, with what each was
     /// paid: one payment per due date, oldest first, going past `--as-of` when
     /// paid ahead. Only a variable subscription settles due dates this way.
-    fn settled(&self, start: Date, payments: &[(Date, Decimal)]) -> Vec<(Date, Decimal)> {
+    fn settled(&self, start: Date, payments: &[(Date, Decimal)]) -> Result<Vec<(Date, Decimal)>> {
+        let mut settled = Vec::new();
         if !self.variable {
-            return Vec::new();
+            return Ok(settled);
         }
-        let dues = (0..)
-            .map(|k| self.every.nth(self.first, k))
-            .filter(|d| *d >= start)
-            .take_while(|d| self.end.is_none_or(|e| *d <= e));
-        dues.zip(payments.iter().map(|p| p.1)).collect()
+        let mut payments = payments.iter();
+        for due in self.schedule() {
+            let due = due?;
+            if self.end.is_some_and(|e| due > e) {
+                break;
+            }
+            if due < start {
+                continue;
+            }
+            let Some(payment) = payments.next() else { break };
+            settled.push((due, payment.1));
+        }
+        Ok(settled)
     }
 
     /// The due dates from `start` up to `as_of`, with what each books: what was
     /// paid for a settled one, the price otherwise.
-    fn dues(&self, start: Date, as_of: Date, settled: &[(Date, Decimal)]) -> Vec<(Date, Decimal)> {
-        let dues = self.due_dates(as_of).into_iter().filter(|d| *d >= start);
-        dues.enumerate().map(|(i, d)| (d, settled.get(i).map_or_else(|| self.price_at(d), |s| s.1))).collect()
+    fn dues(&self, start: Date, as_of: Date, settled: &[(Date, Decimal)]) -> Result<Vec<(Date, Decimal)>> {
+        let dues = self.due_dates(as_of)?.into_iter().filter(|d| *d >= start);
+        Ok(dues.enumerate().map(|(i, d)| (d, settled.get(i).map_or_else(|| self.price_at(d), |s| s.1))).collect())
     }
 
     /// The last due date `total` covers, paying due dates oldest first and
     /// going past `--as-of` if there's enough.
-    fn paid_until(&self, start: Date, total: Decimal) -> Option<Date> {
+    fn paid_until(&self, start: Date, total: Decimal) -> Result<Option<Date>> {
         let mut remaining = total;
         let mut last = None;
-        for d in (0..).map(|k| self.every.nth(self.first, k)) {
+        for d in self.schedule() {
+            let d = d?;
             if self.end.is_some_and(|e| d > e) {
                 break;
             }
@@ -282,7 +317,12 @@ impl Subscription {
             remaining -= price;
             last = Some(d);
         }
-        last
+        Ok(last)
+    }
+
+    /// What an error from the schedule is about.
+    fn named(&self) -> String {
+        format!("subscription {:?} ({})", self.name, self.file)
     }
 }
 
@@ -334,7 +374,7 @@ pub fn generate(
     as_of: Date,
     g: &mut Generated,
     findings: &mut Findings,
-) -> Vec<State> {
+) -> Result<Vec<State>> {
     let start = config.start();
     let commodity = config.books.currency.clone();
     for s in subs {
@@ -362,8 +402,8 @@ pub fn generate(
             });
         }
         let (debit, credit) = s.legs(config);
-        let settled = s.settled(start, &s.payments(&balance_account, &g.txs, as_of));
-        for (due, price) in s.dues(start, as_of, &settled) {
+        let settled = s.settled(start, &s.payments(&balance_account, &g.txs, as_of)).with_context(|| s.named())?;
+        for (due, price) in s.dues(start, as_of, &settled).with_context(|| s.named())? {
             let postings = vec![Posting::new(&debit, price, &commodity), Posting::new(&credit, -price, &commodity)];
             g.txs.push(LedgerTransaction {
                 date: due,
@@ -375,10 +415,10 @@ pub fn generate(
             });
         }
     }
-    subs.iter().map(|s| check(config, s, as_of, g, findings)).collect()
+    subs.iter().map(|s| check(config, s, as_of, g, findings).with_context(|| s.named())).collect()
 }
 
-fn check(config: &Config, s: &Subscription, as_of: Date, g: &Generated, findings: &mut Findings) -> State {
+fn check(config: &Config, s: &Subscription, as_of: Date, g: &Generated, findings: &mut Findings) -> Result<State> {
     let (paid, settled): (Decimal, _) = match (&s.flow, s.balance_account()) {
         (Flow::Transfer { from, to }, _) => {
             let paid = transfer_payments(config, from, to, &g.txs)
@@ -407,11 +447,11 @@ fn check(config: &Config, s: &Subscription, as_of: Date, g: &Generated, findings
                     );
                 }
             }
-            (payments.iter().map(|p| p.1).sum(), s.settled(config.start(), &payments))
+            (payments.iter().map(|p| p.1).sum(), s.settled(config.start(), &payments)?)
         }
         (_, None) => unreachable!("only transfers have no balance account"),
     };
-    let dues = s.dues(config.start(), as_of, &settled);
+    let dues = s.dues(config.start(), as_of, &settled)?;
     let due_total: Decimal = dues.iter().map(|d| d.1).sum();
     let credit = s.opening + paid - due_total;
 
@@ -425,17 +465,17 @@ fn check(config: &Config, s: &Subscription, as_of: Date, g: &Generated, findings
             break;
         }
     }
-    let next_due = s.next_due(as_of);
+    let next_due = s.next_due(as_of)?;
     let price = s.price_at(next_due.unwrap_or(as_of));
     let paid_until =
-        if s.variable { settled.last().map(|d| d.0) } else { s.paid_until(config.start(), s.opening + paid) };
-    let committed_until = s
-        .notice
-        .map(|n| {
-            let until = n.after(as_of);
-            s.end.map_or(until, |e| e.min(until))
-        })
-        .filter(|d| *d > as_of);
+        if s.variable { settled.last().map(|d| d.0) } else { s.paid_until(config.start(), s.opening + paid)? };
+    let committed_until = match s.notice {
+        Some(notice) => {
+            let until = notice.after(as_of)?;
+            Some(s.end.map_or(until, |e| e.min(until))).filter(|d| *d > as_of)
+        }
+        None => None,
+    };
 
     if let Some(d) = oldest_unpaid
         && crate::dates::days_between(as_of, d) > s.grace_days
@@ -464,55 +504,68 @@ fn check(config: &Config, s: &Subscription, as_of: Date, g: &Generated, findings
     {
         findings.warn("subscription", format!("{}: ended {end}, but {} was paid beyond that", s.name, fmt_num(credit)));
     }
-    State { name: s.name.clone(), price, credit, oldest_unpaid, next_due, paid_until, committed_until }
+    Ok(State { name: s.name.clone(), price, credit, oldest_unpaid, next_due, paid_until, committed_until })
 }
 
 /// `ledger/forecast.journal`: hledger periodic transactions for every future
 /// due date, so `hledger bal --forecast` shows what's coming. A transfer is
 /// forecast as the bank transfer itself, from the first due date that isn't
 /// paid yet (at its full price, even if part of it is).
-pub fn forecast(config: &Config, subs: &[Subscription], states: &[State], as_of: Date) -> String {
+pub fn forecast(config: &Config, subs: &[Subscription], states: &[State], as_of: Date) -> Result<String> {
     let mut out = String::new();
     let _ = writeln!(out, "{}", journal::header_line(as_of));
     let _ = writeln!(out, "; Periodic transactions for future subscription due dates. Used by --forecast.");
-    let commodity = &config.books.currency;
     for (s, state) in subs.iter().zip(states) {
-        let (after, tag) = match s.flow {
-            Flow::Transfer { .. } => (state.paid_until.map_or(as_of, |p| p.max(as_of)), tags::PAYS),
-            Flow::Expense(_) | Flow::Income(_) => (as_of, tags::SUBSCRIPTION),
-        };
-        let Some(mut from) = s.next_due(after) else { continue };
-        let every = match s.every {
-            Period::Days(n) => format!("every {n} days"),
-            Period::Months(n) => format!("every {n} months"),
-        };
-        loop {
-            let price = s.price_at(from);
-            // Until the next price change or the end, whichever comes first.
-            let change = s.prices.iter().map(|p| p.0).find(|d| *d > from);
-            let end_excl = s.end.map(|e| e.tomorrow().expect("date out of range"));
-            let to = match (change, end_excl) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
-            let to_text = to.map(|t| format!(" to {t}")).unwrap_or_default();
-            let _ = writeln!(out, "\n~ {every} from {from}{to_text}  {}  ; {tag}:{}", s.payee, s.name);
-            let (debit, credit) = s.legs(config);
-            let width = debit.chars().count().max(credit.chars().count()).max(36);
-            for (account, amount) in [(&debit, price), (&credit, -price)] {
-                let pad = " ".repeat(width - account.chars().count());
-                let _ = writeln!(out, "    {account}{pad}  {:>16}", fmt_amount(amount, commodity));
-            }
-            // Continue from the first due date in the next price period.
-            let Some(t) = to.filter(|t| Some(*t) == change) else { break };
-            let Some(next) = (0..).map(|k| s.every.nth(s.first, k)).find(|d| *d >= t) else { break };
-            if s.end.is_some_and(|e| next > e) {
-                break;
-            }
-            from = next;
-        }
+        forecast_one(&mut out, config, s, state, as_of).with_context(|| s.named())?;
     }
-    out
+    Ok(out)
+}
+
+/// One subscription's periodic transactions: one for each price, from its
+/// next due date on.
+fn forecast_one(out: &mut String, config: &Config, s: &Subscription, state: &State, as_of: Date) -> Result<()> {
+    let commodity = &config.books.currency;
+    let (after, tag) = match s.flow {
+        Flow::Transfer { .. } => (state.paid_until.map_or(as_of, |p| p.max(as_of)), tags::PAYS),
+        Flow::Expense(_) | Flow::Income(_) => (as_of, tags::SUBSCRIPTION),
+    };
+    let Some(mut from) = s.next_due(after)? else { return Ok(()) };
+    let every = match s.every {
+        Period::Days(n) => format!("every {n} days"),
+        Period::Months(n) => format!("every {n} months"),
+    };
+    // hledger takes the day after the last one.
+    let end_excl = match s.end {
+        Some(end) => Some(end.tomorrow().map_err(|_| {
+            anyhow!("date out of range: `end` ({end}) is the last date there is; leave it out if this doesn't end")
+        })?),
+        None => None,
+    };
+    loop {
+        let price = s.price_at(from);
+        // Until the next price change or the end, whichever comes first.
+        let change = s.prices.iter().map(|p| p.0).find(|d| *d > from);
+        let to = match (change, end_excl) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let to_text = to.map(|t| format!(" to {t}")).unwrap_or_default();
+        let _ = writeln!(out, "\n~ {every} from {from}{to_text}  {}  ; {tag}:{}", s.payee, s.name);
+        let (debit, credit) = s.legs(config);
+        let width = debit.chars().count().max(credit.chars().count()).max(36);
+        for (account, amount) in [(&debit, price), (&credit, -price)] {
+            let pad = " ".repeat(width - account.chars().count());
+            let _ = writeln!(out, "    {account}{pad}  {:>16}", fmt_amount(amount, commodity));
+        }
+        // Continue from the first due date in the next price period.
+        let Some(t) = to.filter(|t| Some(*t) == change) else { break };
+        let next = s.first_due(|d| d >= t)?;
+        if s.end.is_some_and(|e| next > e) {
+            break;
+        }
+        from = next;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -537,13 +590,13 @@ mod tests {
             prices = [{ from = 2025-01-01, amount = 100 }, { from = 2025-03-01, amount = 120 }]
         "#);
         assert_eq!(
-            s.due_dates(date(2026, 1, 1)),
+            s.due_dates(date(2026, 1, 1)).expect("the due dates are in range"),
             [date(2025, 1, 31), date(2025, 2, 28), date(2025, 3, 31), date(2025, 4, 30), date(2025, 5, 31)]
         );
         assert_eq!(s.price_at(date(2025, 2, 28)), Decimal::from(100));
         assert_eq!(s.price_at(date(2025, 3, 31)), Decimal::from(120));
-        assert_eq!(s.next_due(date(2025, 4, 30)), Some(date(2025, 5, 31)));
-        assert_eq!(s.next_due(date(2025, 5, 31)), None);
+        assert_eq!(s.next_due(date(2025, 4, 30)).ok(), Some(Some(date(2025, 5, 31))));
+        assert_eq!(s.next_due(date(2025, 5, 31)).ok(), Some(None));
     }
 
     #[test]
@@ -612,13 +665,15 @@ mod tests {
             prices = [{ from = 2025-01-01, amount = 100 }, { from = 2025-03-01, amount = 200 }]
         "#);
         let start = date(2025, 1, 1);
-        assert_eq!(s.paid_until(start, Decimal::from(99)), None);
-        assert_eq!(s.paid_until(start, Decimal::from(200)), Some(date(2025, 2, 28)));
+        let paid_until =
+            |start, total: i64| s.paid_until(start, Decimal::from(total)).expect("the due dates are in range");
+        assert_eq!(paid_until(start, 99), None);
+        assert_eq!(paid_until(start, 200), Some(date(2025, 2, 28)));
         // 100 + 100 + 200 = 400 covers March; 150 left isn't enough for April.
-        assert_eq!(s.paid_until(start, Decimal::from(550)), Some(date(2025, 3, 31)));
+        assert_eq!(paid_until(start, 550), Some(date(2025, 3, 31)));
         // Never past the end, however much is paid.
-        assert_eq!(s.paid_until(start, Decimal::from(100_000)), Some(date(2025, 6, 30)));
+        assert_eq!(paid_until(start, 100_000), Some(date(2025, 6, 30)));
         // Due dates before the books start don't count.
-        assert_eq!(s.paid_until(date(2025, 2, 1), Decimal::from(100)), Some(date(2025, 2, 28)));
+        assert_eq!(paid_until(date(2025, 2, 1), 100), Some(date(2025, 2, 28)));
     }
 }

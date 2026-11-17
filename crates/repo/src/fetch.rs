@@ -170,8 +170,10 @@ impl PendingLinks {
     }
 }
 
-pub fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).expect("clock before 1970").as_secs()
+/// The time now, in seconds since 1970. An error if the system clock is set
+/// to before that.
+pub fn now_secs() -> Result<u64> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH).context("the system clock is set to before 1970")?.as_secs())
 }
 
 /// A signed JWT for the API (RS256, `kid` = application ID).
@@ -214,7 +216,7 @@ impl Client {
     pub fn new(settings: &Settings) -> Result<Client> {
         let key_path = expand_home(Path::new(&settings.private_key));
         let pem = std::fs::read(&key_path).with_context(|| format!("reading {}", key_path.display()))?;
-        let token = token(&settings.application_id, &pem, now_secs())?;
+        let token = token(&settings.application_id, &pem, now_secs()?)?;
         let agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
         Ok(Client { agent, token })
     }

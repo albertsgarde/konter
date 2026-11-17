@@ -38,6 +38,17 @@ pub fn rules(config: &Config, files: &[(&str, &str)]) -> Rules {
 
 /// Builds the books. `files`: (source, path relative to data/, text).
 pub fn build(config: &Config, rules: Rules, accounts: &[&str], files: &[(&str, &str, &str)], as_of: Date) -> Build {
+    try_build(config, rules, accounts, files, as_of).expect("the books build")
+}
+
+/// Builds the books, or says why they can't be built.
+pub fn try_build(
+    config: &Config,
+    rules: Rules,
+    accounts: &[&str],
+    files: &[(&str, &str, &str)],
+    as_of: Date,
+) -> anyhow::Result<Build> {
     let mut findings = Findings::default();
     let mut raw: BTreeMap<&str, Vec<sources::RawFile>> = BTreeMap::new();
     for (name, source) in &config.sources {

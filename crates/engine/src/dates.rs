@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use jiff::ToSpan;
 use jiff::civil::Date;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
@@ -62,9 +62,16 @@ pub fn days_between(a: Date, b: Date) -> i64 {
 }
 
 /// Adds months, clamping to the end of the month (Jan 31 + 1 month = Feb 28).
-pub fn add_months(date: Date, months: i32) -> Date {
+/// An error if that is past the last date there is.
+pub fn add_months(date: Date, months: i32) -> Result<Date> {
     // jiff's month arithmetic already clamps to the last day of the month.
-    date.checked_add(months.months()).expect("date out of range")
+    date.checked_add(months.months()).map_err(|_| out_of_range(date, format_args!("{months} months")))
+}
+
+/// Dates end with year 9999. Schedules are stepped through from what the
+/// rules say, so the rules can lead past it.
+fn out_of_range(from: Date, step: fmt::Arguments) -> anyhow::Error {
+    anyhow!("date out of range: {step} after {from} is past year 9999, the last there is")
 }
 
 const MAX_PERIOD_MONTHS: i32 = 100 * 12;
@@ -104,16 +111,25 @@ impl Period {
     }
 
     /// The `k`-th occurrence counted from `anchor` (k = 0 is the anchor itself).
-    /// Computed from the anchor, so month-end dates don't drift.
-    pub fn nth(&self, anchor: Date, k: i32) -> Date {
+    /// Computed from the anchor, so month-end dates don't drift. An error if
+    /// it is past the last date there is.
+    pub fn nth(&self, anchor: Date, k: i32) -> Result<Date> {
         match *self {
-            Period::Days(n) => anchor.checked_add((n * k).days()).expect("date out of range"),
-            Period::Months(n) => add_months(anchor, n * k),
+            Period::Days(n) => {
+                let far = || out_of_range(anchor, format_args!("{k} times {n} days"));
+                let days = n.checked_mul(k).ok_or_else(far)?;
+                anchor.checked_add(days.days()).map_err(|_| far())
+            }
+            Period::Months(n) => {
+                let months = n.checked_mul(k);
+                let months = months.ok_or_else(|| out_of_range(anchor, format_args!("{k} times {n} months")))?;
+                add_months(anchor, months)
+            }
         }
     }
 
     /// Adds one period to a date.
-    pub fn after(&self, date: Date) -> Date {
+    pub fn after(&self, date: Date) -> Result<Date> {
         self.nth(date, 1)
     }
 }
@@ -138,10 +154,28 @@ mod tests {
     }
 
     #[test]
+    fn dates_past_the_last_one_are_errors() {
+        let last = date(9999, 12, 31);
+        assert_eq!(Period::Days(1).nth(date(9999, 12, 30), 1).ok(), Some(last));
+        for (period, anchor, k) in [
+            (Period::Days(1), last, 1),
+            (Period::Months(1), date(9999, 12, 1), 1),
+            // More days or months than a number holds.
+            (Period::Days(36_600), date(2026, 1, 1), 100_000),
+            (Period::Months(1_200), date(2026, 1, 1), 2_000_000),
+        ] {
+            let error = period.nth(anchor, k).expect_err("that's past year 9999").to_string();
+            assert!(error.contains("date out of range") && error.contains(&anchor.to_string()), "{error}");
+        }
+        assert!(Period::Months(1).after(last).is_err());
+        assert!(add_months(last, 1).is_err());
+    }
+
+    #[test]
     fn periods() {
         let p = Period::parse("1 month").expect("the period parses");
-        assert_eq!(p.nth(date(2025, 1, 31), 1), date(2025, 2, 28));
-        assert_eq!(p.nth(date(2025, 1, 31), 2), date(2025, 3, 31));
+        assert_eq!(p.nth(date(2025, 1, 31), 1).ok(), Some(date(2025, 2, 28)));
+        assert_eq!(p.nth(date(2025, 1, 31), 2).ok(), Some(date(2025, 3, 31)));
         assert_eq!(Period::parse("2 weeks").expect("the period parses"), Period::Days(14));
         assert_eq!(Period::parse("1 year").expect("the period parses"), Period::Months(12));
         assert!(Period::parse("monthly").is_err());

@@ -26,14 +26,14 @@ fn files(build: &Build) -> [(&'static str, &str); 3] {
 }
 
 /// Reads everything and builds the books in memory. Fails only if inputs can't
-/// be read at all.
+/// be read at all, or a subscription's schedule runs past the last date there is.
 pub fn build(repo: &Repo, config: &Config, as_of: Date) -> Result<Build> {
     let mut findings = Findings::default();
     let rules = load::rules(repo, config)?;
     let loaded = load::all_sources(repo, config, &mut findings)?;
     let manual = load::manual(repo)?;
     stray_files(repo, &mut findings);
-    Ok(pipeline::assemble(config, rules, loaded, &manual, as_of, findings))
+    pipeline::assemble(config, rules, loaded, &manual, as_of, findings)
 }
 
 /// Everything in ledger/ is written by konter, so anything else there is left

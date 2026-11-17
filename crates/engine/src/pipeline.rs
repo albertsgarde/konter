@@ -3,6 +3,7 @@
 //! the whole books in memory and the generated journals. Reading them from the repository is the IO side's
 //! job (`books`).
 
+use anyhow::Result;
 use jiff::civil::Date;
 
 use crate::config::Config;
@@ -40,7 +41,9 @@ pub struct Build {
 
 /// Builds the books as of `as_of`. `manual`: the accounts and transactions
 /// written by hand in config/; `findings` already holds what loading the inputs
-/// found.
+/// found. What's wrong with the inputs goes in the findings, all but one
+/// thing: a subscription whose schedule runs past the last date there is has
+/// no state to report, and is an error.
 pub fn assemble(
     config: &Config,
     rules: Rules,
@@ -48,7 +51,7 @@ pub fn assemble(
     manual: &Manual,
     as_of: Date,
     mut findings: Findings,
-) -> Build {
+) -> Result<Build> {
     for (name, source) in &config.sources {
         let data = loaded.sources.get(name);
         if let Some(last) = data.and_then(|d| d.last())
@@ -107,13 +110,13 @@ pub fn assemble(
 
     let mut generated = engine::generate(config, &rules, &loaded, &mut findings);
     let subscriptions =
-        crate::subscriptions::generate(config, &rules.subscriptions, as_of, &mut generated, &mut findings);
+        crate::subscriptions::generate(config, &rules.subscriptions, as_of, &mut generated, &mut findings)?;
     let accounts = manual.accounts.union(&generated.tool_accounts).cloned().collect();
     let currency = &config.books.currency;
     let books = crate::books::assemble(&manual.txs, &generated.txs, &accounts, currency, &mut findings);
     let journal = journal::render(as_of, currency, &accounts, &books);
-    let forecast = crate::subscriptions::forecast(config, &rules.subscriptions, &subscriptions, as_of);
-    Build { as_of, loaded, rules, generated, journal, forecast, books, subscriptions, findings }
+    let forecast = crate::subscriptions::forecast(config, &rules.subscriptions, &subscriptions, as_of)?;
+    Ok(Build { as_of, loaded, rules, generated, journal, forecast, books, subscriptions, findings })
 }
 
 /// Warns, a year ahead like the warning about where the data ends, before the
