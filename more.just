@@ -30,6 +30,12 @@ check *flags: _check-setup && (_check-pin flags)
 test:
     cargo test
 
+# The lints are picked in Cargo.toml. --workspace, because konter-relay isn't
+# a default member, and --all-targets for the tests.
+[doc("Clippy on every crate and its tests. A warning fails it.")]
+lint:
+    cargo clippy --workspace --all-targets -- -D warnings
+
 # Run any konter subcommand.
 konter *args: _check-setup
     {{konter}} "$@"

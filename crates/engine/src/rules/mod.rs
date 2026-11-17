@@ -240,9 +240,9 @@ fn convert_output(raw: RawOutput) -> Result<Output> {
     if let Some(txs) = raw.transactions {
         actions.push(Action::Transactions(convert_transactions(txs)?));
     }
-    if actions.len() != 1 {
+    let Ok([action]) = <[Action; 1]>::try_from(actions) else {
         bail!("needs exactly one of: account, split, transfer, subscription, unknown, ignore, transactions");
-    }
+    };
     for (k, v) in &raw.tags {
         if !valid_tag(k) || v.contains([',', ';', '\n']) {
             bail!("invalid tag {k:?} = {v:?} (no spaces, commas, colons or semicolons in names; no commas in values)");
@@ -251,12 +251,7 @@ fn convert_output(raw: RawOutput) -> Result<Output> {
             bail!("tag {k:?} is one konter writes itself; use another name");
         }
     }
-    Ok(Output {
-        payee: raw.payee,
-        note: raw.note,
-        tags: raw.tags.into_iter().collect(),
-        action: actions.pop().unwrap(),
-    })
+    Ok(Output { payee: raw.payee, note: raw.note, tags: raw.tags.into_iter().collect(), action })
 }
 
 fn convert_split(parts: Vec<RawSplit>) -> Result<Vec<SplitPart>> {
@@ -510,7 +505,7 @@ impl Rules {
                 Action::Account(a) => add(a),
                 Action::Split(parts) => parts.iter().for_each(|p| add(&p.account)),
                 Action::Transactions(txs) => txs.iter().flat_map(|t| &t.postings).for_each(|p| add(&p.account)),
-                _ => {}
+                Action::Transfer(_) | Action::Subscription(_) | Action::Unknown(_) | Action::Ignore(_) => {}
             }
         }
         for s in &self.subscriptions {

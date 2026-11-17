@@ -149,6 +149,10 @@ fn scheme_of(t: &BankTransaction) -> Scheme {
     }
 }
 
+// What `scheme_of` has checked, for the code that goes by its answer.
+const HAS_BALANCE: &str = "the balance scheme is for rows with a running balance";
+const HAS_BANK_REF: &str = "the reference scheme is for rows with a bank reference";
+
 /// With a `cutover`, CSV data is used before it and API data from it on.
 fn in_window(format: Format, date: Date, cutover: Option<Date>) -> bool {
     match cutover {
@@ -258,8 +262,8 @@ fn deduplicate(files: Vec<RawFile>) -> Union {
         rows.sort_by_key(|t| (t.booked, t.time, t.order_hint));
         for row in rows {
             let base = match scheme_of(&row) {
-                Scheme::Balance => Key::Balance(row.booked, row.amount, row.balance_after.unwrap(), 0),
-                Scheme::BankRef => Key::BankRef(row.bank_ref.clone().unwrap()),
+                Scheme::Balance => Key::Balance(row.booked, row.amount, row.balance_after.expect(HAS_BALANCE), 0),
+                Scheme::BankRef => Key::BankRef(row.bank_ref.clone().expect(HAS_BANK_REF)),
                 Scheme::Text => Key::Text(row.booked, row.amount, row.description.clone(), 0),
             };
             let n = occurrences.entry(base.clone()).or_insert(0);
@@ -381,9 +385,9 @@ fn assign_ids(name: &str, prefix: &str, txs: &mut [BankTransaction], findings: &
                 "{name}\x1f{}\x1f{}\x1f{}\x1f{n}",
                 t.booked,
                 canonical(t.amount),
-                canonical(t.balance_after.unwrap())
+                canonical(t.balance_after.expect(HAS_BALANCE))
             ),
-            Scheme::BankRef => format!("{name}\x1fref\x1f{}", t.bank_ref.as_deref().unwrap()),
+            Scheme::BankRef => format!("{name}\x1fref\x1f{}", t.bank_ref.as_deref().expect(HAS_BANK_REF)),
             Scheme::Text => format!("{name}\x1f{}\x1f{}\x1f{}\x1f{n}", t.booked, canonical(t.amount), t.description),
         };
         *n += 1;
@@ -393,6 +397,20 @@ fn assign_ids(name: &str, prefix: &str, txs: &mut [BankTransaction], findings: &
         }
     }
 }
+
+/// The running balance after a transaction that is being chained.
+fn after(t: &BankTransaction) -> Decimal {
+    t.balance_after.expect("only transactions with a running balance are chained")
+}
+
+/// The running balance before a transaction that is being chained.
+fn before(t: &BankTransaction) -> Decimal {
+    after(t) - t.amount
+}
+
+/// `chain` makes a day only for a date that has a transaction, and an order
+/// of a day has all of them.
+const DAY_HAS_ONE: &str = "a day that is chained has a transaction";
 
 /// Orders transactions (all with running balances) so each one starts from the
 /// previous one's balance. `occurrences`: each one's place among those that
@@ -418,7 +436,7 @@ fn chain(txs: &[BankTransaction], occurrences: &[u32]) -> (Vec<usize>, Vec<Strin
                 let own = chain_day_unanchored(txs, idxs, days.get(k + 1).map(|(_, next)| next.as_slice()));
                 match (&own, current) {
                     (Some(o), Some((prev_day, b))) => {
-                        let starts = txs[o[0]].balance_before().unwrap();
+                        let starts = before(&txs[o[0]]);
                         breaks.push(format!(
                             "between {prev_day} and {day}: balance was {}, next transaction starts from {} \
                              (difference {}); a transaction is probably missing",
@@ -433,7 +451,7 @@ fn chain(txs: &[BankTransaction], occurrences: &[u32]) -> (Vec<usize>, Vec<Strin
                 own.unwrap_or_else(|| idxs.clone())
             }
         };
-        current = Some((day, txs[*day_order.last().unwrap()].balance_after.unwrap()));
+        current = Some((day, after(&txs[*day_order.last().expect(DAY_HAS_ONE)])));
         order.extend(day_order);
     }
     (order, breaks)
@@ -468,12 +486,12 @@ fn chain_day_unanchored(txs: &[BankTransaction], idxs: &[usize], next: Option<&[
     let found = chain_day(txs, idxs, None, None)?;
     let Some(next) = next else { return Some(found) };
     let leads_on = |end: Decimal| chain_day(txs, next, Some(end), None).is_some();
-    if leads_on(txs[*found.last().unwrap()].balance_after.unwrap()) {
+    if leads_on(after(&txs[*found.last().expect(DAY_HAS_ONE)])) {
         return Some(found);
     }
     let mut tried = Vec::new();
     for &j in next {
-        let end = txs[j].balance_before().unwrap();
+        let end = before(&txs[j]);
         if tried.contains(&end) {
             continue;
         }
@@ -517,7 +535,7 @@ fn chain_day(
             if !used[j] && txs[i].balance_before() == Some(current) {
                 used[j] = true;
                 path.push(i);
-                if dfs(txs, idxs, txs[i].balance_after.unwrap(), end, used, path, budget) {
+                if dfs(txs, idxs, after(&txs[i]), end, used, path, budget) {
                     return true;
                 }
                 used[j] = false;
@@ -528,7 +546,7 @@ fn chain_day(
     }
     let starts: Vec<Decimal> = match start {
         Some(b) => vec![b],
-        None => idxs.iter().map(|&i| txs[i].balance_before().unwrap()).collect(),
+        None => idxs.iter().map(|&i| before(&txs[i])).collect(),
     };
     for b in starts {
         let mut used = vec![false; idxs.len()];
@@ -575,18 +593,18 @@ mod tests {
             time: None,
             value_date: None,
             transaction_date: None,
-            amount: Decimal::from_str(amount).unwrap(),
+            amount: Decimal::from_str(amount).expect("the test's amount is a decimal"),
             currency: "DKK".into(),
             original_amount: None,
             original_currency: None,
             description: desc.into(),
             counterparty: None,
             counterparty_name: None,
-            balance_after: Some(Decimal::from_str(balance).unwrap()),
+            balance_after: Some(Decimal::from_str(balance).expect("the test's balance is a decimal")),
             bank_ref: None,
             raw: BTreeMap::new(),
             origins: vec![Origin { file: file.into(), line }],
-            order_hint: -(line as i64),
+            order_hint: -i64::try_from(line).expect("a small line number"),
         }
     }
 
@@ -610,9 +628,13 @@ mod tests {
         let mut findings = Findings::default();
         let data = merge("test:a", &source(), date(2025, 1, 1), vec![f], &mut findings);
         assert!(!findings.has_errors(), "{}", findings.render(true));
-        let balances: Vec<String> = data.txs.iter().map(|t| fmt_num(t.balance_after.unwrap())).collect();
+        let balances: Vec<String> = data
+            .txs
+            .iter()
+            .map(|t| fmt_num(t.balance_after.expect("the test's rows have a running balance")))
+            .collect();
         assert_eq!(balances, ["40.00", "1040.00", "2040.00", "1889.75"]);
-        assert_eq!(data.opening, Some(Decimal::from_str("50").unwrap()));
+        assert_eq!(data.opening, Some(Decimal::from_str("50").expect("a decimal")));
         // Two identical-looking rows still get different IDs.
         assert_ne!(data.txs[1].id, data.txs[2].id);
     }

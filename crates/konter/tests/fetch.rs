@@ -16,7 +16,7 @@ fn a_source_that_cant_be_fetched_is_named() {
             // No secrets: the source is checked before any are read.
             .env("KONTER_CONFIG_DIR", Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-config"))
             .output()
-            .unwrap();
+            .expect("konter runs");
         assert_eq!(output.status.code(), Some(2));
         String::from_utf8_lossy(&output.stderr).into_owned()
     };

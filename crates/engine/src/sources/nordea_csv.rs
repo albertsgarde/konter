@@ -88,7 +88,7 @@ pub fn parse(text: &str, ctx: &FileContext) -> Result<Vec<BankTransaction>> {
                 bank_ref: None,
                 raw,
                 origins: vec![Origin { file: ctx.rel.clone(), line }],
-                order_hint: -(line as i64), // newest first
+                order_hint: -i64::try_from(line).unwrap_or(i64::MAX), // newest first
             }))
         })()
         .with_context(|| format!("line {line}"))?;

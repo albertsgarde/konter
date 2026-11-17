@@ -351,12 +351,14 @@ pub fn parse_redirect(pasted: &str, expected_state: &str) -> Result<String> {
 
 /// Formats a unix time as RFC 3339 (UTC).
 pub fn rfc3339(secs: u64) -> String {
-    jiff::Timestamp::from_second(secs as i64).map(|t| t.to_string()).unwrap_or_default()
+    let time = i64::try_from(secs).ok().and_then(|secs| jiff::Timestamp::from_second(secs).ok());
+    time.map(|t| t.to_string()).unwrap_or_default()
 }
 
 /// Drops `null` fields, recursively. The API lists every field and fills in
 /// few, so this shrinks stored responses by about two thirds without losing
 /// anything (a missing field and a null one mean the same).
+#[expect(clippy::wildcard_enum_match_arm, reason = "the kinds of JSON are fixed, and the rest hold no fields")]
 pub fn strip_nulls(v: Value) -> Value {
     match v {
         Value::Object(map) => {
@@ -414,16 +416,17 @@ mod tests {
 
     #[test]
     fn signs_a_valid_jwt() {
-        let token = token("app-id", TEST_KEY.as_bytes(), 1_800_000_000).unwrap();
-        let header = jsonwebtoken::decode_header(&token).unwrap();
+        let token = token("app-id", TEST_KEY.as_bytes(), 1_800_000_000).expect("the token is signed");
+        let header = jsonwebtoken::decode_header(&token).expect("the token has a header");
         assert_eq!(header.kid.as_deref(), Some("app-id"));
         assert_eq!(header.alg, Algorithm::RS256);
         let mut validation = jsonwebtoken::Validation::new(Algorithm::RS256);
         validation.set_audience(&["api.enablebanking.com"]);
         validation.set_issuer(&["enablebanking.com"]);
         validation.validate_exp = false;
-        let key = jsonwebtoken::DecodingKey::from_rsa_pem(TEST_PUB.as_bytes()).unwrap();
-        let data = jsonwebtoken::decode::<Value>(&token, &key, &validation).unwrap();
+        let key = jsonwebtoken::DecodingKey::from_rsa_pem(TEST_PUB.as_bytes()).expect("the test's public key reads");
+        let data =
+            jsonwebtoken::decode::<Value>(&token, &key, &validation).expect("the token verifies with the public key");
         assert_eq!(data.claims["exp"], 1_800_000_000u64 + TOKEN_SECONDS);
     }
 
@@ -431,18 +434,18 @@ mod tests {
     fn secrets_are_written_for_the_owner_only() {
         let dir = std::env::temp_dir().join(format!("konter-write-private-{}", std::process::id()));
         let path = dir.join("nested/sessions.toml");
-        write_private(&path, b"first").unwrap();
+        write_private(&path, b"first").expect("the file is written");
         // Over what's there, and over a temporary file left behind.
-        std::fs::write(dir.join("nested/.sessions.toml.tmp"), "left behind").unwrap();
-        write_private(&path, b"second").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+        std::fs::write(dir.join("nested/.sessions.toml.tmp"), "left behind").expect("the leftover file is written");
+        write_private(&path, b"second").expect("the file is written over");
+        assert_eq!(std::fs::read_to_string(&path).expect("the file is read"), "second");
         assert!(!dir.join("nested/.sessions.toml.tmp").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(&path).expect("the file has metadata").permissions().mode() & 0o777, 0o600);
         }
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).expect("the scratch folder is removed");
     }
 
     #[test]
@@ -456,8 +459,11 @@ mod tests {
 
     #[test]
     fn redirect_parsing() {
-        assert_eq!(parse_redirect("https://localhost/cb?state=s1&code=abc", "s1").unwrap(), "abc");
-        assert_eq!(parse_redirect("  abc  ", "s1").unwrap(), "abc");
+        assert_eq!(
+            parse_redirect("https://localhost/cb?state=s1&code=abc", "s1").expect("the redirect has a code"),
+            "abc"
+        );
+        assert_eq!(parse_redirect("  abc  ", "s1").expect("a bare code is taken as it is"), "abc");
         assert!(parse_redirect("https://localhost/cb?state=other&code=abc", "s1").is_err());
         assert!(parse_redirect("https://localhost/cb?error=access_denied", "s1").is_err());
     }
@@ -473,7 +479,7 @@ mod tests {
             "balances": {"balances": [{"x": null}]}
         });
         let text = to_raw_json(&strip_nulls(doc.clone()));
-        let back: Value = serde_json::from_str(&text).unwrap();
+        let back: Value = serde_json::from_str(&text).expect("what's stored is JSON");
         assert_eq!(back, strip_nulls(doc));
         assert!(!text.contains("null"));
         assert!(text.contains("\n  {\"a\":2}\n"), "{text}");

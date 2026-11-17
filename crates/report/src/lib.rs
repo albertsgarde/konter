@@ -261,9 +261,13 @@ mod tests {
     /// hundredths.
     fn tx(date: &str, payee: &str, tags: &[&str], comments: &[&str], postings: &[(&str, i64)]) -> Transaction {
         Transaction {
-            date: date.parse().unwrap(),
+            date: date.parse().expect("the test's date parses"),
             description: payee.into(),
-            tags: tags.iter().map(|t| t.split_once(':').unwrap()).map(|(n, v)| (n.into(), v.into())).collect(),
+            tags: tags
+                .iter()
+                .map(|t| t.split_once(':').expect("the test's tags are written name:value"))
+                .map(|(n, v)| (n.into(), v.into()))
+                .collect(),
             comments: comments.iter().map(|c| c.to_string()).collect(),
             postings: postings
                 .iter()
@@ -287,7 +291,7 @@ mod tests {
 
     #[test]
     fn reads_expense_postings() {
-        let found = rows(&books(), Side::Spending, "DKK", &[]).unwrap();
+        let found = rows(&books(), Side::Spending, "DKK", &[]).expect("the rows are made");
         assert_eq!(
             found,
             [
@@ -309,7 +313,7 @@ mod tests {
                 },
             ]
         );
-        let error = rows(&books(), Side::Spending, "EUR", &[]).unwrap_err().to_string();
+        let error = rows(&books(), Side::Spending, "EUR", &[]).expect_err("another currency is refused").to_string();
         assert!(error.contains("not EUR"), "{error}");
     }
 
@@ -328,7 +332,7 @@ mod tests {
             ],
         );
         let pots = [SetAside { source: "nordea:main".into(), ledger: "assets:bank:nordea:main".into() }];
-        let found = rows(&[salary], Side::Income, "DKK", &pots).unwrap();
+        let found = rows(&[salary], Side::Income, "DKK", &pots).expect("the rows are made");
         assert_eq!(
             found,
             [Row {
@@ -339,7 +343,7 @@ mod tests {
                 ..Row::default()
             }]
         );
-        assert!(rows(&books(), Side::Income, "DKK", &[]).unwrap().is_empty());
+        assert!(rows(&books(), Side::Income, "DKK", &[]).expect("the rows are made").is_empty());
     }
 
     #[test]
@@ -370,8 +374,8 @@ mod tests {
         let rows =
             mark_spans(vec![due(Some("yearly")), due(Some("quarterly")), due(Some("monthly")), due(None)], &spans);
         assert_eq!(rows.iter().map(|r| r.m).collect::<Vec<_>>(), [Some(12), Some(3), None, None]);
-        assert!(serde_json::to_string(&rows[0]).unwrap().contains(r#""m":12"#));
-        assert!(!serde_json::to_string(&rows[2]).unwrap().contains(r#""m""#));
+        assert!(serde_json::to_string(&rows[0]).expect("a row is JSON").contains(r#""m":12"#));
+        assert!(!serde_json::to_string(&rows[2]).expect("a row is JSON").contains(r#""m""#));
     }
 
     #[test]
@@ -395,7 +399,13 @@ mod tests {
                 &[("assets:bank:nordea:main", -200000), ("assets:transfers", 200000)],
             ),
             // Given away from the pot: an expense, marked as paid from it.
-            tx("2026-11-05", "Example Charity", &[], &[], &[(pot, -150000), ("expenses:donations:example-charity", 150000)]),
+            tx(
+                "2026-11-05",
+                "Example Charity",
+                &[],
+                &[],
+                &[(pot, -150000), ("expenses:donations:example-charity", 150000)],
+            ),
             // Interest earned in the pot isn't money set aside.
             tx("2026-12-31", "Rente", &[], &[], &[(pot, 100), ("income:interest", -100)]),
             // Nor is the opening balance.
@@ -407,8 +417,11 @@ mod tests {
             SetAside { source: "lunar:charity".into(), ledger: pot.into() },
             SetAside { source: "bank:savings".into(), ledger: "assets:bank:savings".into() },
         ];
-        let found = rows(&books, Side::Spending, "DKK", &pots).unwrap();
+        let found = rows(&books, Side::Spending, "DKK", &pots).expect("the rows are made");
         let summary: Vec<(&str, i64, bool)> = found.iter().map(|r| (r.a.as_str(), r.v, r.x)).collect();
-        assert_eq!(summary, [("set-aside:charity", 200000, false), ("expenses:donations:example-charity", 150000, true)]);
+        assert_eq!(
+            summary,
+            [("set-aside:charity", 200000, false), ("expenses:donations:example-charity", 150000, true)]
+        );
     }
 }

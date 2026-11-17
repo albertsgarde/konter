@@ -15,6 +15,33 @@ license = "MIT OR Apache-2.0"
 # Nothing here needs `unsafe`, and this keeps it that way.
 [workspace.lints.rust]
 unsafe_code = "forbid"
+unused_qualifications = "warn"
+
+# Picked one by one, not as a group. An exception is an `#[expect]` with a
+# reason, at the place it applies.
+[workspace.lints.clippy]
+# konter prints through a writer that survives a closed pipe, and the library
+# crates don't print at all.
+print_stdout = "warn"
+# Amounts are Decimal, never floats.
+float_arithmetic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+redundant_clone = "warn"
+implicit_clone = "warn"
+assigning_clones = "warn"
+needless_pass_by_value = "warn"
+cognitive_complexity = "warn"
+too_many_lines = "warn"
+# An `expect` says what was taken for granted, in tests too.
+unwrap_used = "warn"
+# A new variant has to be handled wherever its enum is matched.
+wildcard_enum_match_arm = "warn"
+allow_attributes_without_reason = "warn"
+cast_possible_wrap = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_lossless = "warn"
 
 [workspace.dependencies]
 konter-diagnostics = { path = "crates/diagnostics" }

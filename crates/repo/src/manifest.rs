@@ -134,7 +134,7 @@ pub fn raw_files(repo: &Repo) -> Result<Vec<String>> {
     }
     Ok(files
         .iter()
-        .map(|p| p.strip_prefix(&data).unwrap().to_string_lossy().replace('\\', "/"))
+        .map(|p| p.strip_prefix(&data).expect("walk lists paths under data/").to_string_lossy().replace('\\', "/"))
         .filter(|rel| rel != "MANIFEST" && !rel.starts_with(TMP_PREFIX) && !rel.starts_with("reference/"))
         .collect())
 }

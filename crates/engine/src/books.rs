@@ -181,7 +181,8 @@ mod tests {
     use jiff::civil::date;
 
     fn manual(transactions: &str) -> Manual {
-        Manual::parse(r#"accounts = ["assets:bank", "expenses:x", "equity:opening"]"#, transactions).unwrap()
+        Manual::parse(r#"accounts = ["assets:bank", "expenses:x", "equity:opening"]"#, transactions)
+            .expect("the test's transactions parse")
     }
 
     fn generated(day: i8, amount: i64, balance: i64) -> LedgerTransaction {
@@ -193,7 +194,7 @@ mod tests {
             tags: vec![],
             comments: vec![],
             postings: vec![bank, Posting::new("expenses:x", Decimal::from(-amount), "DKK")],
-            provenance: Provenance::Bank { source: "a".into(), seq: day as usize },
+            provenance: Provenance::Bank { source: "a".into(), seq: usize::try_from(day).expect("a day of the month") },
         }
     }
 

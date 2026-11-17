@@ -1,7 +1,7 @@
 //! Building the books from text, the way konter-repo does from the files on
 //! disk: config, rules, raw bank files and accounts in, the whole build out.
 
-#![allow(dead_code)]
+#![allow(dead_code, reason = "each test binary uses its own part of this")]
 
 use std::collections::BTreeMap;
 
@@ -29,11 +29,11 @@ unmatched = "allow"
 "#;
 
 pub fn config(text: &str) -> Config {
-    Config::parse(text, "config/sources.toml").unwrap()
+    Config::parse(text, "config/sources.toml").expect("the test's config parses")
 }
 
 pub fn rules(config: &Config, files: &[(&str, &str)]) -> Rules {
-    Rules::from_files(files.iter().copied(), config).unwrap()
+    Rules::from_files(files.iter().copied(), config).expect("the test's rules load")
 }
 
 /// Builds the books. `files`: (source, path relative to data/, text).
@@ -46,7 +46,9 @@ pub fn build(config: &Config, rules: Rules, accounts: &[&str], files: &[(&str, &
         }
     }
     for (source, rel, text) in files {
-        raw.get_mut(source).unwrap().push(sources::parse_raw(config, source, rel, text, None).unwrap());
+        raw.get_mut(source)
+            .expect("the file is for a source in the config")
+            .push(sources::parse_raw(config, source, rel, text, None).expect("the test's bank file parses"));
     }
     let loaded = Loaded {
         sources: raw
@@ -55,7 +57,7 @@ pub fn build(config: &Config, rules: Rules, accounts: &[&str], files: &[(&str, &
             .collect(),
     };
     let quoted: Vec<String> = accounts.iter().map(|a| format!("{a:?}")).collect();
-    let manual = Manual::parse(&format!("accounts = [{}]", quoted.join(", ")), "").unwrap();
+    let manual = Manual::parse(&format!("accounts = [{}]", quoted.join(", ")), "").expect("a list of accounts parses");
     pipeline::assemble(config, rules, loaded, &manual, as_of, findings)
 }
 
@@ -79,7 +81,7 @@ pub fn nordea_rel(when: &str) -> String {
 /// Danish notation for an amount: `-1069.5` → `-1.069,50`.
 pub fn danish(d: Decimal) -> String {
     let text = format!("{:.2}", d.abs());
-    let (int, frac) = text.split_once('.').unwrap();
+    let (int, frac) = text.split_once('.').expect("the amount is written with two decimals");
     let mut grouped = String::new();
     for (i, c) in int.chars().enumerate() {
         if i > 0 && (int.len() - i) % 3 == 0 {
@@ -121,7 +123,7 @@ impl Rng {
 
     /// A number in `0..n`.
     pub fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+        usize::try_from(self.next() % n as u64).expect("below n, which is a usize")
     }
 
     pub fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {

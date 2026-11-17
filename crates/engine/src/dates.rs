@@ -132,18 +132,18 @@ mod tests {
 
     #[test]
     fn parsing() {
-        assert_eq!(parse_ymd_slash("2026/03/05").unwrap(), date(2026, 3, 5));
-        assert_eq!(parse_dmy_dot("13.10.2026").unwrap(), date(2026, 10, 13));
+        assert_eq!(parse_ymd_slash("2026/03/05").expect("the date parses"), date(2026, 3, 5));
+        assert_eq!(parse_dmy_dot("13.10.2026").expect("the date parses"), date(2026, 10, 13));
         assert!(parse_ymd_slash("Reserveret").is_err());
     }
 
     #[test]
     fn periods() {
-        let p = Period::parse("1 month").unwrap();
+        let p = Period::parse("1 month").expect("the period parses");
         assert_eq!(p.nth(date(2025, 1, 31), 1), date(2025, 2, 28));
         assert_eq!(p.nth(date(2025, 1, 31), 2), date(2025, 3, 31));
-        assert_eq!(Period::parse("2 weeks").unwrap(), Period::Days(14));
-        assert_eq!(Period::parse("1 year").unwrap(), Period::Months(12));
+        assert_eq!(Period::parse("2 weeks").expect("the period parses"), Period::Days(14));
+        assert_eq!(Period::parse("1 year").expect("the period parses"), Period::Months(12));
         assert!(Period::parse("monthly").is_err());
     }
 
@@ -154,7 +154,7 @@ mod tests {
             a: ConfigDate,
             b: ConfigDate,
         }
-        let t: T = toml::from_str("a = 2025-01-01\nb = \"2025-02-03\"").unwrap();
+        let t: T = toml::from_str("a = 2025-01-01\nb = \"2025-02-03\"").expect("a date parses both ways");
         assert_eq!(t.a.0, date(2025, 1, 1));
         assert_eq!(t.b.0, date(2025, 2, 3));
     }

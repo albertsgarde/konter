@@ -76,7 +76,7 @@ fn small_cases(max_legs: usize, days: i8, mut f: impl FnMut(&[Leg])) {
     let choices: Vec<(i8, i64)> = (1..=days).flat_map(|d| [(d, -500), (d, 500)]).collect();
     for n in 1..=max_legs {
         for forward in 0..=n {
-            for code in 0..choices.len().pow(n as u32) {
+            for code in 0..choices.len().pow(u32::try_from(n).expect("a handful of legs")) {
                 let mut c = code;
                 let legs: Vec<Leg> = (0..n)
                     .map(|k| {
@@ -99,7 +99,7 @@ fn random_legs(rng: &mut Rng) -> Vec<Leg> {
             let from = *rng.pick(&accounts);
             let to = *rng.pick(&accounts.iter().copied().filter(|a| *a != from).collect::<Vec<_>>());
             let amount = *rng.pick(&[-500, 500, -300, 300]);
-            leg(from, to, 1 + rng.below(28) as i8, amount, k)
+            leg(from, to, 1 + i8::try_from(rng.below(28)).expect("below 28"), amount, k)
         })
         .collect()
 }
@@ -236,7 +236,8 @@ fn merge(config: &Config, rows: &[Row], exports: &[Range<usize>]) -> (SourceData
         .enumerate()
         .map(|(k, range)| {
             let rel = nordea_rel(&format!("2026-02-{:02} 10.00.00", k + 1));
-            sources::parse_raw(config, "bank:a", &rel, &export_csv(&rows[range.clone()]), None).unwrap()
+            sources::parse_raw(config, "bank:a", &rel, &export_csv(&rows[range.clone()]), None)
+                .expect("the generated export parses")
         })
         .collect();
     let data = sources::merge_source(config, "bank:a", raw, &mut findings);
@@ -245,7 +246,18 @@ fn merge(config: &Config, rows: &[Row], exports: &[Range<usize>]) -> (SourceData
 
 /// What a merge gives: every transaction with its ID, in booking order.
 fn merged_rows(data: &SourceData) -> Vec<String> {
-    data.txs.iter().map(|t| format!("{} {} {} {:?}", t.id, t.amount, t.balance_after.unwrap(), t.description)).collect()
+    data.txs
+        .iter()
+        .map(|t| {
+            format!(
+                "{} {} {} {:?}",
+                t.id,
+                t.amount,
+                t.balance_after.expect("the generated rows have a running balance"),
+                t.description
+            )
+        })
+        .collect()
 }
 
 /// "Any number of overlapping files is fine; merging sorts them out": the
@@ -423,14 +435,14 @@ fn amounts_read_back_exactly() {
     }
     let mut rng = Rng::new(4);
     for _ in 0..5000 {
-        let digits = 1 + rng.below(13) as u32;
-        let mantissa = (rng.next() % 10u64.pow(digits)) as i64;
+        let digits = 1 + u32::try_from(rng.below(13)).expect("below 13");
+        let mantissa = i64::try_from(rng.next() % 10u64.pow(digits)).expect("at most 13 digits");
         let sign = if rng.below(2) == 0 { 1 } else { -1 };
-        let d = Decimal::new(sign * mantissa, rng.below(3) as u32);
-        assert_eq!(parse_plain(&fmt_num(d)).unwrap(), d, "{d}");
-        assert_eq!(parse_danish(&danish(d)).unwrap(), d, "{}", danish(d));
+        let d = Decimal::new(sign * mantissa, u32::try_from(rng.below(3)).expect("below 3"));
+        assert_eq!(parse_plain(&fmt_num(d)).expect("what fmt_num writes parses"), d, "{d}");
+        assert_eq!(parse_danish(&danish(d)).expect("Danish notation parses"), d, "{}", danish(d));
         for written in [fmt_num(d), format!("\"{}\"", fmt_num(d))] {
-            let read: InRules = toml::from_str(&format!("amount = {written}")).unwrap();
+            let read: InRules = toml::from_str(&format!("amount = {written}")).expect("the amount reads in the rules");
             assert_eq!(read.amount.0, d, "amount = {written}");
         }
     }

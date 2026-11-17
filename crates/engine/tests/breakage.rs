@@ -168,7 +168,7 @@ fn transfers_before_an_accounts_start_go_to_before_start_even_without_its_data()
         &[("bank:a", &rel, &csv)],
         date(2026, 1, 31),
     );
-    let tx = build.books.iter().find(|tx| tx.date == date(2026, 1, 5)).unwrap();
+    let tx = build.books.iter().find(|tx| tx.date == date(2026, 1, 5)).expect("a transaction on 5 January");
     let accounts: Vec<&str> = tx.postings.iter().map(|p| p.account.as_str()).collect();
     assert_eq!(accounts, ["assets:bank:a", "assets:receivable:friend"]);
 }

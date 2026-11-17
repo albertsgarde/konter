@@ -129,6 +129,7 @@ struct Applied {
     ignored: Option<String>,
 }
 
+#[expect(clippy::too_many_lines, reason = "one match, with an arm for each action")]
 fn apply(
     config: &Config,
     rules: &Rules,
@@ -221,7 +222,7 @@ fn apply(
                     tx.date = d;
                 }
                 if let Some(p) = &spec.payee {
-                    tx.description = p.clone();
+                    tx.description.clone_from(p);
                 }
                 tx.comments.extend(spec.note.iter().cloned());
                 let mut rest_at = None;
@@ -679,7 +680,7 @@ fn report_stale_later(rules: &Rules, g: &Generated, findings: &mut Findings) {
             let by = match &g.outcomes.get(&l.id)?.status {
                 Status::Pin => "a pin".to_string(),
                 Status::Rule(name) => format!("rule {name:?}"),
-                _ => return None,
+                Status::Unmatched | Status::Later(_) | Status::Ambiguous(_) | Status::Invalid { .. } => return None,
             };
             Some(format!("later {:?} ({}): mapped by {by}; remove the mark", l.id, l.file))
         })
@@ -741,7 +742,7 @@ mod tests {
             Output { payee: Some("Shop".into()), note: None, tags: Vec::new(), action: Action::Ignore("".into()) };
         let tx = header(&t, "shop", 0, Some(&output));
         let [comment] = &tx.comments[..] else { panic!("{:?}", tx.comments) };
-        let quoted = comment.strip_prefix("bank: ").unwrap();
-        assert_eq!(serde_json::from_str::<String>(quoted).unwrap(), text);
+        let quoted = comment.strip_prefix("bank: ").expect("the comment holds the bank's text");
+        assert_eq!(serde_json::from_str::<String>(quoted).expect("the bank's text is quoted as JSON"), text);
     }
 }

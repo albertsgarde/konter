@@ -134,7 +134,7 @@ mod tests {
             from: from.into(),
             to: to.into(),
             date: d,
-            amount: Decimal::from_str(amount).unwrap(),
+            amount: Decimal::from_str(amount).expect("the test's amount is a decimal"),
             id: id.into(),
         }
     }

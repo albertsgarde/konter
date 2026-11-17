@@ -58,6 +58,7 @@ fn amount_at(v: &Value, path: &[&str]) -> Result<Option<Decimal>> {
 }
 
 /// Flattens a JSON object into `a.b.c` → text, for `raw.<field>` rule conditions.
+#[expect(clippy::wildcard_enum_match_arm, reason = "the kinds of JSON are fixed, and the rest are the scalars")]
 fn flatten(prefix: &str, v: &Value, out: &mut BTreeMap<String, String>) {
     match v {
         Value::Object(map) => {
@@ -82,6 +83,7 @@ fn flatten(prefix: &str, v: &Value, out: &mut BTreeMap<String, String>) {
     }
 }
 
+#[expect(clippy::wildcard_enum_match_arm, reason = "the kinds of JSON are fixed, and the rest print as they are")]
 fn scalar(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -164,7 +166,7 @@ fn parse_transaction(t: &Value, index: usize, ctx: &FileContext) -> Result<Optio
         bank_ref,
         raw,
         origins: vec![Origin { file: ctx.rel.clone(), line: index as u64 + 1 }],
-        order_hint: index as i64,
+        order_hint: i64::try_from(index).unwrap_or(i64::MAX),
     }))
 }
 
@@ -242,21 +244,21 @@ mod tests {
             {"balance_type": "ITBD", "balance_amount": {"currency": "DKK", "amount": "-161.70"}, "reference_date": "2026-11-20"}
           ]}
         }"#;
-        let (rows, snaps) = parse(text, &ctx()).unwrap();
+        let (rows, snaps) = parse(text, &ctx()).expect("the fetch parses");
         assert_eq!(rows.len(), 2, "pending transaction skipped");
         let a = &rows[0];
-        assert_eq!(a.amount, Decimal::from_str("-300").unwrap());
+        assert_eq!(a.amount, Decimal::from_str("-300").expect("a decimal"));
         assert_eq!(a.description, "FORENINGEN EKSEMPEL FR");
         assert_eq!(a.counterparty.as_deref(), Some("DK11"));
-        assert_eq!(a.balance_after, Some(Decimal::from_str("-12.50").unwrap()));
+        assert_eq!(a.balance_after, Some(Decimal::from_str("-12.50").expect("a decimal")));
         assert_eq!(a.transaction_date, Some(Date::constant(2026, 10, 31)));
         assert_eq!(a.raw.get("creditor.name").map(String::as_str), Some("Foreningen Eksempel"));
         let b = &rows[1];
         assert_eq!(b.booked, Date::constant(2026, 11, 4), "falls back to value_date");
         assert_eq!(b.description, "Shop");
-        assert_eq!(b.original_amount, Some(Decimal::from_str("-20").unwrap()));
+        assert_eq!(b.original_amount, Some(Decimal::from_str("-20").expect("a decimal")));
         assert_eq!(b.original_currency.as_deref(), Some("EUR"));
         assert_eq!(snaps.len(), 1);
-        assert_eq!(snaps[0].balance, Decimal::from_str("-161.70").unwrap());
+        assert_eq!(snaps[0].balance, Decimal::from_str("-161.70").expect("a decimal"));
     }
 }

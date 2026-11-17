@@ -419,6 +419,7 @@ impl<'a> Gaps<'a> {
     }
 
     /// `top` limits the groups shown; 0 shows all of them.
+    #[expect(clippy::too_many_lines, reason = "one page of text, written from the top down")]
     pub fn render(&self, config: &Config, categories: &BTreeMap<(Date, Decimal), String>, top: usize) -> String {
         let mut out = String::new();
         let (Some(first), Some(last)) = (self.first, self.last) else {

@@ -447,7 +447,7 @@ fn answer(config: &Config, message: &str) -> Result<String> {
         .spawn()
         .with_context(|| format!("starting {}", config.claude))?;
     // Dropped once written, so Claude sees the end of the prompt.
-    child.stdin.take().unwrap().write_all(prompt(&conversation, message).as_bytes())?;
+    child.stdin.take().expect("stdin is piped, just above").write_all(prompt(&conversation, message).as_bytes())?;
     let out = child.wait_with_output()?;
     let result: ClaudeResult = serde_json::from_slice(&out.stdout).with_context(|| {
         format!("{} printed no result: {}", config.claude, last_lines(&String::from_utf8_lossy(&out.stderr), 10))
@@ -544,7 +544,7 @@ mod tests {
             clone = "/srv/konter"
             "#,
         )
-        .unwrap();
+        .expect("the config parses");
         assert_eq!(config.daily, "just pinned more daily");
         assert_eq!(config.digest, "just pinned more konter digest");
         assert!(config.password.is_none());
@@ -553,8 +553,8 @@ mod tests {
 
     #[test]
     fn waits_for_the_network() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let open = listener.local_addr().unwrap().to_string();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port can be listened on");
+        let open = listener.local_addr().expect("the listener has an address").to_string();
         assert!(wait_online(std::slice::from_ref(&open), Duration::ZERO));
         assert!(wait_online(&[], Duration::ZERO));
         drop(listener);

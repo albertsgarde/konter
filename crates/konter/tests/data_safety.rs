@@ -9,11 +9,15 @@ use std::process::{Command, Output, Stdio};
 /// A fresh copy of the basic fixture.
 fn scratch(name: &str) -> PathBuf {
     fn copy(from: &Path, to: &Path) {
-        std::fs::create_dir_all(to).unwrap();
-        for entry in std::fs::read_dir(from).unwrap() {
-            let path = entry.unwrap().path();
-            let target = to.join(path.file_name().unwrap());
-            if path.is_dir() { copy(&path, &target) } else { std::fs::copy(&path, &target).map(|_| ()).unwrap() }
+        std::fs::create_dir_all(to).expect("the folder is made");
+        for entry in std::fs::read_dir(from).expect("the fixture's folder is read") {
+            let path = entry.expect("the folder's entry is read").path();
+            let target = to.join(path.file_name().expect("the entry has a name"));
+            if path.is_dir() {
+                copy(&path, &target)
+            } else {
+                std::fs::copy(&path, &target).map(|_| ()).expect("the file is copied")
+            }
         }
     }
     let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("data-safety").join(name);
@@ -33,7 +37,7 @@ fn text(output: &Output) -> String {
 }
 
 fn manifest(root: &Path) -> String {
-    std::fs::read_to_string(root.join("data/MANIFEST")).unwrap()
+    std::fs::read_to_string(root.join("data/MANIFEST")).expect("data/MANIFEST is read")
 }
 
 const LUNAR: &str = "\u{feff}Date,Time,Title,Amount,Balance,Transaction ID\n\
@@ -52,10 +56,10 @@ fn concurrent_add_exports_keep_every_manifest_line() {
     let root = scratch("manifest-race");
     let before = manifest(&root);
     let incoming = root.join("incoming");
-    std::fs::create_dir_all(&incoming).unwrap();
+    std::fs::create_dir_all(&incoming).expect("the folder is made");
     let names: Vec<String> = (0..16).map(|i| format!("export-{i}.csv")).collect();
     for name in &names {
-        std::fs::write(incoming.join(name), LUNAR).unwrap();
+        std::fs::write(incoming.join(name), LUNAR).expect("the export is written");
     }
     let runs: Vec<_> = names
         .iter()
@@ -67,11 +71,11 @@ fn concurrent_add_exports_keep_every_manifest_line() {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
-                .unwrap()
+                .expect("konter starts")
         })
         .collect();
     for mut run in runs {
-        run.wait().unwrap();
+        run.wait().expect("konter finishes");
     }
     let after = manifest(&root);
     let lost: Vec<&str> = before.lines().filter(|line| !after.contains(line)).collect();
@@ -90,14 +94,14 @@ fn add_export_doesnt_accept_a_changed_raw_file() {
     let root = scratch("in-place");
     let path = root.join("data/nordea/1234567890/Konto 1234567890 - 2026-01-31 10.00.00.csv");
     let before = manifest(&root);
-    let original = std::fs::read_to_string(&path).unwrap();
+    let original = std::fs::read_to_string(&path).expect("the export is read");
     let changed: String =
         original.lines().filter(|l| !l.contains("Concert tickets")).map(|l| format!("{l}\n")).collect();
-    std::fs::write(&path, changed).unwrap();
-    let build = konter(&root).args(["build", "--as-of", "2026-02-15"]).output().unwrap();
+    std::fs::write(&path, changed).expect("the export is written");
+    let build = konter(&root).args(["build", "--as-of", "2026-02-15"]).output().expect("konter runs");
     assert!(text(&build).contains("content changed since it was added"), "{}", text(&build));
 
-    let run = konter(&root).arg("add-export").arg(&path).output().unwrap();
+    let run = konter(&root).arg("add-export").arg(&path).output().expect("konter runs");
     // Refusing is fine; recording the changed file isn't.
     assert_eq!(manifest(&root), before, "add-export said:\n{}", text(&run));
 }
@@ -119,12 +123,17 @@ fn add_export_doesnt_overwrite_a_recorded_balance() {
             .arg(&path)
             .args(["--source", "lunar:b", "--balance", balance, "--balance-date", "2026-01-29"])
             .output()
-            .unwrap()
+            .expect("konter runs")
     };
     let first = add("520");
     assert!(first.status.success(), "{}", text(&first));
-    let recorded = std::fs::read_to_string(&sidecar).unwrap();
+    let recorded = std::fs::read_to_string(&sidecar).expect("the sidecar is read");
     let again = add("5200"); // a slip of the finger
     // Refusing is fine; replacing the record isn't.
-    assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), recorded, "add-export said:\n{}", text(&again));
+    assert_eq!(
+        std::fs::read_to_string(&sidecar).expect("the sidecar is read"),
+        recorded,
+        "add-export said:\n{}",
+        text(&again)
+    );
 }

@@ -248,7 +248,7 @@ fn run() -> Result<ExitCode> {
         Command::Banks { country } => banks(&country),
         Command::Link { bank, days, start, finish } => link(config, &bank, days, start, finish),
         Command::Session { bank } => session(&bank),
-        Command::Fetch { source, from } => fetch_all(repo, config, source, from),
+        Command::Fetch { source, from } => fetch_all(repo, config, source.as_deref(), from),
         Command::Init { .. } => unreachable!("init is handled before the books are found"),
     }
 }
@@ -309,7 +309,7 @@ fn subscriptions(repo: &Repo, config: &Config, as_of: Option<Date>) -> Result<Ex
     for (sub, state) in build.rules.subscriptions.iter().zip(&build.subscriptions) {
         let status = match (state.oldest_unpaid, state.credit) {
             (Some(d), c) => format!("{} owed since {d}", fmt_num(-c)),
-            (None, c) if c > rust_decimal::Decimal::ZERO => format!("{} paid ahead", fmt_num(c)),
+            (None, c) if c > Decimal::ZERO => format!("{} paid ahead", fmt_num(c)),
             _ => "ok".into(),
         };
         let opt = |d: Option<Date>| d.map(|d| d.to_string()).unwrap_or_else(|| "-".into());
@@ -393,7 +393,7 @@ fn unmatched(repo: &Repo, config: &Config, source: Option<&str>) -> Result<ExitC
                 later += 1;
                 continue;
             }
-            _ => continue,
+            Status::Rule(_) | Status::Pin | Status::Ambiguous(_) | Status::Invalid { .. } => continue,
         }
         count += 1;
         writeln!(Stdout, "# {}  {}  {}  {}", t.source, t.booked, fmt_num(t.amount), quoted_description(t))?;
@@ -663,7 +663,7 @@ fn add_export(
     file: &Path,
     source: Option<String>,
     name: Option<String>,
-    snapshot: Option<(Date, rust_decimal::Decimal)>,
+    snapshot: Option<(Date, Decimal)>,
 ) -> Result<ExitCode> {
     let text = load::read_text(file)?;
     let file_name = file.file_name().context("not a file")?.to_string_lossy().into_owned();
@@ -750,7 +750,9 @@ fn add_export(
 fn add_raw_file(repo: &Repo, rel: &str, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     let path = repo.data().join(rel);
-    std::fs::create_dir_all(path.parent().unwrap())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -885,8 +887,8 @@ fn source_for_iban<'a>(config: &'a Config, bank: &str, iban: &str) -> Option<&'a
         .map(|(name, _)| name.as_str())
 }
 
-fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<Date>) -> Result<ExitCode> {
-    if let Some(only) = &only {
+fn fetch_all(repo: &Repo, config: &Config, only: Option<&str>, from: Option<Date>) -> Result<ExitCode> {
+    if let Some(only) = only {
         let source = config.sources.get(only).with_context(|| format!("unknown source {only}"))?;
         if !source.formats.contains(&Format::EnableBanking) {
             bail!("{only} isn't fetched: it has no \"enable-banking\" in its formats in config/sources.toml");
@@ -898,7 +900,7 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<Da
     let mut findings = Findings::default();
     let mut fetched_any = false;
     for (name, source) in &config.sources {
-        if only.as_ref().is_some_and(|o| o != name) || !source.formats.contains(&Format::EnableBanking) {
+        if only.is_some_and(|o| o != name) || !source.formats.contains(&Format::EnableBanking) {
             continue;
         }
         let Some(session) = sessions.banks.get(&source.bank) else {
@@ -938,7 +940,7 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<String>, from: Option<Da
             "fetched_at": now.to_string(),
             "bank": source.bank,
             "account_uid": account.uid,
-            "date_from": date_from.to_string(),
+            "date_from": date_from,
             "pages": pages,
             "balances": balances,
         });
@@ -1001,7 +1003,7 @@ fn booked_refs_missing(doc: &serde_json::Value) -> usize {
 /// Bank references in the source's earlier fetches.
 fn stored_refs(repo: &Repo, config: &Config, name: &str, dir: &str) -> Result<std::collections::BTreeSet<String>> {
     let mut refs = std::collections::BTreeSet::new();
-    for rel in konter_repo::manifest::raw_files(repo)? {
+    for rel in manifest::raw_files(repo)? {
         if rel.starts_with(&format!("{dir}/")) && rel.ends_with(".json") {
             let file = load::raw_file(repo, config, name, &rel)?;
             refs.extend(file.rows.into_iter().filter_map(|t| t.bank_ref));

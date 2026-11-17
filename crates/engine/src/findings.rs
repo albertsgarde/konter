@@ -30,7 +30,7 @@ const MAX_DETAILS: usize = 25;
 impl Findings {
     pub fn push(&mut self, severity: Severity, category: &'static str, message: impl Into<String>) -> &mut Diag {
         self.diags.push(Diag { severity, category, message: message.into(), details: Vec::new() });
-        self.diags.last_mut().unwrap()
+        self.diags.last_mut().expect("one was just pushed")
     }
 
     pub fn error(&mut self, category: &'static str, message: impl Into<String>) -> &mut Diag {

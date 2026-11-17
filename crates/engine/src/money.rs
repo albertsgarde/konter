@@ -90,18 +90,27 @@ mod tests {
 
     #[test]
     fn danish() {
-        assert_eq!(parse_danish("-1.234,56").unwrap(), Decimal::from_str("-1234.56").unwrap());
-        assert_eq!(parse_danish("6500,00").unwrap(), Decimal::from_str("6500").unwrap());
-        assert_eq!(parse_danish("-0,02").unwrap(), Decimal::from_str("-0.02").unwrap());
+        assert_eq!(
+            parse_danish("-1.234,56").expect("Danish notation parses"),
+            Decimal::from_str("-1234.56").expect("a decimal")
+        );
+        assert_eq!(
+            parse_danish("6500,00").expect("Danish notation parses"),
+            Decimal::from_str("6500").expect("a decimal")
+        );
+        assert_eq!(
+            parse_danish("-0,02").expect("Danish notation parses"),
+            Decimal::from_str("-0.02").expect("a decimal")
+        );
         assert!(parse_danish("").is_err());
         assert!(parse_danish("abc").is_err());
     }
 
     #[test]
     fn formatting() {
-        assert_eq!(fmt_num(Decimal::from_str("-4320").unwrap()), "-4320.00");
-        assert_eq!(fmt_num(Decimal::from_str("12.5").unwrap()), "12.50");
-        assert_eq!(fmt_num(Decimal::from_str("0.125").unwrap()), "0.125");
-        assert_eq!(canonical(Decimal::from_str("4320.00").unwrap()), "4320");
+        assert_eq!(fmt_num(Decimal::from_str("-4320").expect("a decimal")), "-4320.00");
+        assert_eq!(fmt_num(Decimal::from_str("12.5").expect("a decimal")), "12.50");
+        assert_eq!(fmt_num(Decimal::from_str("0.125").expect("a decimal")), "0.125");
+        assert_eq!(canonical(Decimal::from_str("4320.00").expect("a decimal")), "4320");
     }
 }

@@ -181,7 +181,7 @@ mod tests {
             ]
             "#,
         )
-        .unwrap();
+        .expect("the transactions parse");
         assert_eq!(manual.accounts.len(), 2);
         let [opening, acme] = &manual.txs[..] else { panic!("{:?}", manual.txs) };
         assert_eq!(opening.tags, [("kind".into(), "opening".into())]);
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(acme.postings[0].balance, Some(Decimal::ZERO));
         assert_eq!(acme.postings[2].amount, ManualAmount::Fixed(Decimal::new(150, 2)));
         assert_eq!(acme.postings[2].balance, Some(Decimal::from(3)));
-        assert!(Manual::parse(ACCOUNTS_TOML, "").unwrap().txs.is_empty());
+        assert!(Manual::parse(ACCOUNTS_TOML, "").expect("the accounts parse").txs.is_empty());
     }
 
     #[test]
@@ -206,19 +206,24 @@ mod tests {
             (r#"{ account = "a", rest = true }, { account = "b", rest = true }"#, "more than one"),
             ("", "has no postings"),
         ] {
-            let error = format!("{:#}", Manual::parse(ACCOUNTS_TOML, &tx(postings)).unwrap_err());
+            let error =
+                format!("{:#}", Manual::parse(ACCOUNTS_TOML, &tx(postings)).expect_err("these postings are refused"));
             assert!(error.contains(expected), "{postings}: {error}");
             assert!(error.contains("config/transactions.toml: transaction 2026-01-01 \"X\""), "{error}");
         }
         // TOML errors point to the line instead.
-        let error = format!("{:#}", Manual::parse(ACCOUNTS_TOML, &tx(r#"{ account = "a", price = 2 }"#)).unwrap_err());
+        let error = format!(
+            "{:#}",
+            Manual::parse(ACCOUNTS_TOML, &tx(r#"{ account = "a", price = 2 }"#))
+                .expect_err("an unknown field is refused")
+        );
         assert!(error.contains("reading config/transactions.toml") && error.contains("unknown field"), "{error}");
         for (accounts, expected) in [
             (r#"accounts = ["a", "a"]"#, "a is declared twice"),
             (r#"accounts = ["a  b"]"#, "invalid account name"),
             (r#"accounts = ["a ; b"]"#, "invalid account name"),
         ] {
-            let error = format!("{:#}", Manual::parse(accounts, "").unwrap_err());
+            let error = format!("{:#}", Manual::parse(accounts, "").expect_err("these accounts are refused"));
             assert!(error.contains(expected), "{accounts}: {error}");
         }
     }

@@ -32,6 +32,7 @@ impl Gaps<'_> {
     }
 
     /// The page's body, with every group (the text shows only the top ones).
+    #[expect(clippy::too_many_lines, reason = "one page, written from the top down, and most of it is markup")]
     pub fn html(&self, config: &Config, categories: &BTreeMap<(Date, Decimal), String>) -> String {
         let mut out = String::new();
         if self.first.is_none() {
@@ -164,6 +165,7 @@ impl Gaps<'_> {
     /// Both sort by any column. The page's script works out → mapped down the
     /// groups in whatever order they're shown, from each group's money and
     /// what of it looks like transfers.
+    #[expect(clippy::too_many_lines, reason = "two tables, and most of it is their markup")]
     fn groups_and_transactions(
         &self,
         out: &mut String,

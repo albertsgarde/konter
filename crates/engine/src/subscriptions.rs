@@ -126,7 +126,7 @@ impl Subscription {
         }
         let grace_days = match raw.grace {
             None => DEFAULT_GRACE_DAYS,
-            Some(Period::Days(d)) => d as i64,
+            Some(Period::Days(d)) => i64::from(d),
             Some(Period::Months(_)) => bail!("grace must be in days or weeks"),
         };
         let flow = match (raw.kind, raw.account, raw.from, raw.to) {
@@ -458,11 +458,11 @@ fn check(config: &Config, s: &Subscription, as_of: Date, g: &Generated, findings
             format!("{}: paid {} ahead, more than one period; paid twice?", s.name, fmt_num(credit)),
         );
     }
-    if s.end.is_some_and(|e| e < as_of) && credit > Decimal::ZERO {
-        findings.warn(
-            "subscription",
-            format!("{}: ended {}, but {} was paid beyond that", s.name, s.end.unwrap(), fmt_num(credit)),
-        );
+    if let Some(end) = s.end
+        && end < as_of
+        && credit > Decimal::ZERO
+    {
+        findings.warn("subscription", format!("{}: ended {end}, but {} was paid beyond that", s.name, fmt_num(credit)));
     }
     State { name: s.name.clone(), price, credit, oldest_unpaid, next_due, paid_until, committed_until }
 }
@@ -479,7 +479,7 @@ pub fn forecast(config: &Config, subs: &[Subscription], states: &[State], as_of:
     for (s, state) in subs.iter().zip(states) {
         let (after, tag) = match s.flow {
             Flow::Transfer { .. } => (state.paid_until.map_or(as_of, |p| p.max(as_of)), tags::PAYS),
-            _ => (as_of, tags::SUBSCRIPTION),
+            Flow::Expense(_) | Flow::Income(_) => (as_of, tags::SUBSCRIPTION),
         };
         let Some(mut from) = s.next_due(after) else { continue };
         let every = match s.every {
@@ -521,8 +521,8 @@ mod tests {
     use jiff::civil::date;
 
     fn sub(toml_text: &str) -> Subscription {
-        let raw: RawSubscription = toml::from_str(toml_text).unwrap();
-        Subscription::from_raw(raw, "test.toml").unwrap()
+        let raw: RawSubscription = toml::from_str(toml_text).expect("the test's subscription is TOML");
+        Subscription::from_raw(raw, "test.toml").expect("the test's subscription is valid")
     }
 
     #[test]
@@ -558,8 +558,13 @@ mod tests {
             prices = [{ from = 2025-02-01, amount = 100 }]
         "#,
         )
-        .unwrap();
-        assert!(Subscription::from_raw(raw, "t").unwrap_err().to_string().contains("no price"));
+        .expect("the test's subscription is TOML");
+        assert!(
+            Subscription::from_raw(raw, "t")
+                .expect_err("a first due date without a price is refused")
+                .to_string()
+                .contains("no price")
+        );
     }
 
     #[test]
@@ -568,18 +573,28 @@ mod tests {
             let raw: RawSubscription = toml::from_str(&format!(
                 "name = \"x\"\n{fields}\nevery = \"1 month\"\nfirst = 2025-01-31\nprices = [{{ from = 2025-01-01, amount = 100 }}]"
             ))
-            .unwrap();
+            .expect("the test's subscription is TOML");
             Subscription::from_raw(raw, "t").err().map(|e| e.to_string())
         };
         assert_eq!(error("kind = \"transfer\"\nfrom = \"a\"\nto = \"b\""), None);
-        assert!(error("kind = \"transfer\"\nfrom = \"a\"").unwrap().contains("needs `from` and `to`"));
+        assert!(error("kind = \"transfer\"\nfrom = \"a\"").expect("this is refused").contains("needs `from` and `to`"));
         assert!(
-            error("kind = \"transfer\"\nfrom = \"a\"\nto = \"b\"\naccount = \"x\"").unwrap().contains("no `account`")
+            error("kind = \"transfer\"\nfrom = \"a\"\nto = \"b\"\naccount = \"x\"")
+                .expect("this is refused")
+                .contains("no `account`")
         );
-        assert!(error("kind = \"transfer\"\nfrom = \"a\"\nto = \"a\"").unwrap().contains("same source"));
-        assert!(error("kind = \"expense\"\naccount = \"x\"\nto = \"b\"").unwrap().contains("needs `account`"));
         assert!(
-            error("kind = \"transfer\"\nfrom = \"a\"\nto = \"b\"\nvariable = true").unwrap().contains("for expenses")
+            error("kind = \"transfer\"\nfrom = \"a\"\nto = \"a\"").expect("this is refused").contains("same source")
+        );
+        assert!(
+            error("kind = \"expense\"\naccount = \"x\"\nto = \"b\"")
+                .expect("this is refused")
+                .contains("needs `account`")
+        );
+        assert!(
+            error("kind = \"transfer\"\nfrom = \"a\"\nto = \"b\"\nvariable = true")
+                .expect("this is refused")
+                .contains("for expenses")
         );
         assert_eq!(error("kind = \"income\"\naccount = \"x\"\nvariable = true"), None);
     }

@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 /// write.
 #[test]
 fn a_closed_pipe_ends_the_command_quietly() {
-    let (reader, writer) = std::io::pipe().unwrap();
+    let (reader, writer) = std::io::pipe().expect("a pipe is made");
     drop(reader);
     let output = Command::new(env!("CARGO_BIN_EXE_konter"))
         .arg("--root")
@@ -18,7 +18,7 @@ fn a_closed_pipe_ends_the_command_quietly() {
         .stdout(writer)
         .stderr(Stdio::piped())
         .output()
-        .unwrap();
+        .expect("konter runs");
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     assert_eq!(output.status.code(), Some(141));
 }
