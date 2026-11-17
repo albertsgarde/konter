@@ -137,7 +137,7 @@ enum Command {
     /// chat, say), in two steps: --start prints the URL to log in at, and
     /// --finish takes the URL the bank redirected to.
     Link {
-        /// Bank name as in [banks.<name>] in config/sources.toml, e.g. nordea.
+        /// Bank name as in `[banks.<name>]` in config/sources.toml, e.g. nordea.
         bank: String,
         /// Requested consent length in days (capped by the bank's maximum).
         #[arg(long, default_value_t = 180)]

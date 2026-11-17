@@ -54,7 +54,7 @@ enum Cmd {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
-    /// The bot's homeserver, e.g. https://matrix.example.org.
+    /// The bot's homeserver, e.g. `https://matrix.example.org`.
     homeserver: String,
     /// The bot's Matrix ID.
     user: OwnedUserId,

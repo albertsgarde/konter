@@ -24,8 +24,18 @@ report: _check-setup
 # has to be on GitHub too, so the pin works on any machine: use it before
 # pushing the books.
 [doc("Everything consistent: the journals are up to date and sound, with the working copy and with the pin.")]
-check *flags: _check-setup && (_check-pin flags)
+verify *flags: _check-setup && (_verify-pin flags)
     {{konter}} verify
+
+# Everything here that can show a problem in the tool's code, so run it before
+# committing a change to the tool. It takes in konter-relay, which plain cargo
+# commands skip. The docs are built for their warnings: a link to something
+# that was renamed, say.
+[doc("The tool's code: formatting, clippy, every crate's tests, and the docs. A warning fails it.")]
+check: lint
+    cargo fmt --all --check
+    cargo test --workspace
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 
 test:
     cargo test
@@ -94,13 +104,13 @@ web *args: _check-setup
 # journals as they are. That catches rules that use something new in the tool
 # without moving the pin. A local pin is fine while working; the books' pushed
 # history needs one that works on any machine, hence --push.
-_check-pin flags="":
+_verify-pin flags="":
     #!/usr/bin/env bash
     set -euo pipefail
     case "$1" in
         "") push=false ;;
         --push) push=true ;;
-        *) echo "check takes only --push, not $1" >&2; exit 1 ;;
+        *) echo "verify takes only --push, not $1" >&2; exit 1 ;;
     esac
     pin="$(realpath {{quote(books)}})/pin"
     if [ ! -f "$pin/flake.lock" ]; then
