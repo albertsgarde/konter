@@ -3,13 +3,13 @@ source: crates/konter/tests/build.rs
 expression: build.findings.render(true)
 ---
 ✗ ambiguous          1 transactions match several rules of equal priority
-      lb-2026-01-10-b23a52  2026-01-10       -30.00  "Coffee Shop": coffee, coffee-lunar
+      lb-2026-01-10-e894d8  2026-01-10       -30.00  "Coffee Shop": coffee, coffee-lunar
 ✗ not mapped         bank:a: 1 of 9 not mapped (100% of amount mapped)
       ba-2026-01-20-b7634b  2026-01-20       -25.00  "Mystery"
       → `konter unmatched bank:a` prints a rule stub for each
 ⚠ opening balance    lunar:b: data starts 2026-01-10, but the opening balance (50.00) is booked at 2026-01-01; set `start` for this source if the account didn't exist yet
 ⚠ not mapped         lunar:b: 1 of 2 not mapped (94% of amount mapped)
-      lb-2026-01-10-b23a52  2026-01-10       -30.00  "Coffee Shop"
+      lb-2026-01-10-e894d8  2026-01-10       -30.00  "Coffee Shop"
       → `konter unmatched lunar:b` prints a rule stub for each
 ⚠ dead rule          2 rules match nothing
       rule "never-matches" (config/rules.toml)

@@ -12,13 +12,13 @@ use jiff::civil::Date;
 use rust_decimal::Decimal;
 
 use super::RawFile;
-use crate::config::{Format, Source};
+use crate::config::{Format, Identity, Source};
 use crate::findings::Findings;
 use crate::hash::sha256_hex_start;
 use crate::model::BankTransaction;
 use crate::money::{canonical, fmt_num};
 
-/// How transactions are identified across files, and how IDs are derived.
+/// How a transaction is identified across files, and how its ID is derived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scheme {
     /// Booking date + amount + running balance (+ occurrence counter).
@@ -122,9 +122,6 @@ fn short(t: &BankTransaction) -> String {
 /// Field-by-field differences between two copies of the same transaction.
 fn differences(a: &BankTransaction, b: &BankTransaction) -> Vec<String> {
     let mut out = Vec::new();
-    if a.format != b.format {
-        return out; // different formats describe the same transaction differently
-    }
     macro_rules! cmp {
         ($field:ident) => {
             if a.$field != b.$field {
@@ -133,9 +130,14 @@ fn differences(a: &BankTransaction, b: &BankTransaction) -> Vec<String> {
         };
     }
     // Part of the key, except for a bank reference: a bank that used one
-    // reference twice would otherwise lose a transaction without a word.
+    // reference twice would otherwise lose a transaction without a word. And
+    // the booking date is in the ID, so copies that disagree on it would give
+    // an ID that depends on which of them is kept.
     cmp!(booked);
     cmp!(amount);
+    if a.format != b.format {
+        return out; // different formats describe the same transaction differently
+    }
     cmp!(description);
     cmp!(currency);
     cmp!(counterparty);
@@ -149,15 +151,58 @@ fn differences(a: &BankTransaction, b: &BankTransaction) -> Vec<String> {
     out
 }
 
-/// Each row is identified by the best data it has (docs/spec.md §4).
-fn scheme_of(t: &BankTransaction) -> Scheme {
-    if t.balance_after.is_some() {
+/// A row is identified the way its source is (docs/spec.md §4). One that
+/// lacks what that takes is identified by the best data it has, and reported
+/// by [`unidentified`].
+fn scheme_of(identity: Identity, t: &BankTransaction) -> Scheme {
+    if identity == Identity::Reference && t.bank_ref.is_some() {
+        Scheme::BankRef
+    } else if t.balance_after.is_some() {
         Scheme::Balance
     } else if t.bank_ref.is_some() {
         Scheme::BankRef
     } else {
         Scheme::Text
     }
+}
+
+/// Whether `t` has what its source's transactions are identified by.
+fn identified(identity: Identity, t: &BankTransaction) -> bool {
+    match identity {
+        Identity::Reference => t.bank_ref.is_some(),
+        Identity::Balance => t.balance_after.is_some(),
+    }
+}
+
+/// Reports transactions that lack what their source's IDs are made from: the
+/// ID such a transaction gets now would change when a file that has it
+/// arrives. With a `cutover` no such file can arrive, since each format then
+/// has its own dates.
+fn unidentified(name: &str, source: &Source, txs: &[BankTransaction], findings: &mut Findings) {
+    let identity = source.identity();
+    let without: Vec<String> = txs
+        .iter()
+        .filter(|t| !identified(identity, t))
+        .map(|t| format!("{} (from {})", short(t), t.origin().file))
+        .collect();
+    if without.is_empty() || source.cutover.is_some() {
+        return;
+    }
+    let what = match identity {
+        Identity::Reference => "bank reference",
+        Identity::Balance => "running balance",
+    };
+    findings
+        .error(
+            "ids",
+            format!("{name}: {} transactions have no {what}, which this account's IDs are made from", without.len()),
+        )
+        .details(without)
+        .detail(format!(
+            "→ the ID such a transaction gets would change when a file that has its {what} arrives, and pins \
+             refer to IDs. If the account's formats can't be matched up, set `cutover` for it in \
+             config/sources.toml (see docs/fetching.md)"
+        ));
 }
 
 // What `scheme_of` has checked, for the code that goes by its answer.
@@ -186,7 +231,7 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
 
     let formats: BTreeSet<Format> = files.iter().filter(|f| !f.rows.is_empty()).map(|f| f.format).collect();
 
-    let Union { txs: union, per_file, mut conflicts, out_of_step } = deduplicate(files);
+    let Union { txs: union, per_file, mut conflicts, out_of_step } = deduplicate(source.identity(), files);
     if !out_of_step.is_empty() {
         findings
             .error(
@@ -222,7 +267,8 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
     } else {
         txs.sort_by_key(|t| (t.booked, t.time, t.order_hint));
     }
-    assign_ids(name, source.id_prefix.as_deref().unwrap_or_default(), &mut txs, findings);
+    unidentified(name, source, &txs, findings);
+    assign_ids(name, source, &mut txs, findings);
 
     let opening = if has_running_balance {
         txs.first().and_then(|t| t.balance_before())
@@ -255,7 +301,7 @@ struct Union {
 }
 
 /// Step 1: one copy of each transaction, from files sorted by path.
-fn deduplicate(files: Vec<RawFile>) -> Union {
+fn deduplicate(identity: Identity, files: Vec<RawFile>) -> Union {
     let mut union: BTreeMap<Key, BankTransaction> = BTreeMap::new();
     // A bank reference identifies a transaction across formats too (Lunar's
     // CSV "Transaction ID" is its API entry_reference).
@@ -289,7 +335,7 @@ fn deduplicate(files: Vec<RawFile>) -> Union {
         let mut rows = file.rows;
         rows.sort_by_key(|t| (t.booked, t.time, t.order_hint));
         for row in rows {
-            let base = match scheme_of(&row) {
+            let base = match scheme_of(identity, &row) {
                 Scheme::Balance => Key::Balance(row.booked, row.amount, row.balance_after.expect(HAS_BALANCE), 0),
                 Scheme::BankRef => Key::BankRef(row.bank_ref.clone().expect(HAS_BANK_REF)),
                 Scheme::Text => Key::Text(row.booked, row.amount, row.description.clone(), 0),
@@ -431,11 +477,12 @@ fn in_chain_order(
 }
 
 /// Step 4: gives each transaction, in order, its ID (docs/spec.md §4).
-fn assign_ids(name: &str, prefix: &str, txs: &mut [BankTransaction], findings: &mut Findings) {
+fn assign_ids(name: &str, source: &Source, txs: &mut [BankTransaction], findings: &mut Findings) {
+    let (prefix, identity) = (source.id_prefix.as_deref().unwrap_or_default(), source.identity());
     let mut occurrences: BTreeMap<(Date, Decimal, Option<Decimal>, String), u32> = BTreeMap::new();
     let mut seen = BTreeSet::new();
     for t in txs {
-        let scheme = scheme_of(t);
+        let scheme = scheme_of(identity, t);
         let text_part = if scheme == Scheme::Text { t.description.clone() } else { String::new() };
         let n = occurrences.entry((t.booked, t.amount, t.balance_after, text_part)).or_insert(0);
         let material = match scheme {
@@ -632,7 +679,7 @@ mod tests {
             iban: None,
             ledger: "assets:bank:test".into(),
             id_prefix: Some("t".into()),
-            formats: vec![Format::LunarCsv],
+            formats: vec![Format::NordeaCsv],
             unmatched: Policy::Error,
             start: None,
             before_start: None,
@@ -646,7 +693,7 @@ mod tests {
         BankTransaction {
             id: String::new(),
             source: "test:a".into(),
-            format: Format::LunarCsv,
+            format: Format::NordeaCsv,
             booked: d,
             time: None,
             value_date: None,
@@ -667,7 +714,7 @@ mod tests {
     }
 
     fn file(rel: &str, rows: Vec<BankTransaction>) -> RawFile {
-        RawFile { rel: rel.into(), format: Format::LunarCsv, rows, snapshots: Vec::new(), exported: None }
+        RawFile { rel: rel.into(), format: Format::NordeaCsv, rows, snapshots: Vec::new(), exported: None }
     }
 
     #[test]

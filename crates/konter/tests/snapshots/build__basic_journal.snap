@@ -52,7 +52,7 @@ account income:salary
     assets:bank:a                              -900.00 DKK = 9100.00 DKK
     assets:prepaid                              900.00 DKK
 
-2026-01-10 Coffee Shop  ; bank-id:lb-2026-01-10-b23a52, rule:unmatched
+2026-01-10 Coffee Shop  ; bank-id:lb-2026-01-10-e894d8, rule:unmatched
     ; not mapped yet
     assets:bank:b                               -30.00 DKK = 20.00 DKK
     expenses:unmatched:lunar:b                   30.00 DKK
@@ -62,11 +62,11 @@ account income:salary
     assets:bank:a                               -25.00 DKK = 9075.00 DKK
     expenses:unmatched:bank:a                    25.00 DKK
 
-2026-01-28 Top up  ; bank-id:ba-2026-01-28-2299c7, rule:top-up, transfer:lunar:b, transfer-pair:lb-2026-01-29-bdd557
+2026-01-28 Top up  ; bank-id:ba-2026-01-28-2299c7, rule:top-up, transfer:lunar:b, transfer-pair:lb-2026-01-29-e0233f
     assets:bank:a                              -500.00 DKK = 8575.00 DKK
     assets:transfers                            500.00 DKK
 
-2026-01-29 Overførsel  ; bank-id:lb-2026-01-29-bdd557, rule:from-bank, transfer:bank:a, transfer-pair:ba-2026-01-28-2299c7
+2026-01-29 Overførsel  ; bank-id:lb-2026-01-29-e0233f, rule:from-bank, transfer:bank:a, transfer-pair:ba-2026-01-28-2299c7
     assets:bank:b                               500.00 DKK = 520.00 DKK
     assets:transfers                           -500.00 DKK
 

@@ -97,6 +97,30 @@ pub struct Source {
     pub set_aside: bool,
 }
 
+/// What tells a source's transactions apart, and what their IDs are made
+/// from (docs/spec.md §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Identity {
+    /// The bank's own reference for the transaction.
+    Reference,
+    /// Booking date, amount and the running balance after it.
+    Balance,
+}
+
+impl Source {
+    /// An ID must not depend on which files a transaction is in, so it's made
+    /// from what every file of the bank has. That's the bank's reference,
+    /// except for Nordea, whose exports have none: its exports and its fetched
+    /// data both have the running balance.
+    pub fn identity(&self) -> Identity {
+        if self.bank == "nordea" || self.formats.contains(&Format::NordeaCsv) {
+            Identity::Balance
+        } else {
+            Identity::Reference
+        }
+    }
+}
+
 /// Bank-level settings.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]

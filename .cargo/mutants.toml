@@ -28,7 +28,7 @@ exclude_re = [
     'pipeline\.rs:80:31: replace < with <= in assemble',
     # Two exports with as many rows on a day have the same rows on it, in the
     # same order: either can place them.
-    'merge\.rs:329:48: replace > with >= in deduplicate',
+    'merge\.rs:375:48: replace > with >= in deduplicate',
     # Only differs for a credit of nothing above a price below nothing.
     'subscriptions\.rs:493:34: replace > with >= in check',
 ]

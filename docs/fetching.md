@@ -61,11 +61,11 @@ just fetch --source nordea:spending  # one source
 
 Each fetch gets transactions from 30 days before the last fetched transaction (or from the source's start the first time), plus the current balance. A fetch with no new transactions isn't stored, unless the last stored fetch is over 30 days old (so quiet accounts still record how far their data reaches). Fetching, `add-export` and `build` never change or remove existing data, so they're safe to run any time. The raw responses are written to `data/<bank>/<account>/eb-<timestamp>.json` and recorded in the MANIFEST. `null` fields are dropped (the API lists every field and fills in few), and each transaction is on its own line, which keeps files about a third of their raw size. Pending transactions are ignored when reading.
 
-**What we found on the first fetch (2026-11-08):** Nordea's API has running balances, so its rows match the CSV exports exactly. Nordea only goes back 540 days. Lunar's API has no running balances, but its `entry_reference` is the CSV export's "Transaction ID", so its rows match the CSV by that instead. Neither bank needs `cutover`.
+**What we found on the first fetch (2026-11-08):** Nordea's API has running balances, so its rows match the CSV exports exactly. Nordea only goes back 540 days. Lunar's API has no running balances, but its `entry_reference` is the CSV export's "Transaction ID", so its rows match the CSV by that instead. A Lunar ID is made from that reference, so a transaction has the same ID whether it was fetched, exported or both. A Nordea ID is made from the running balance, since Nordea's exports have no reference. Neither bank needs `cutover`.
 
 For a new bank, check `just more konter build` after the first fetch:
-- If the API data has running balances, the report still says "running balance unbroken". API rows then get the same IDs as CSV rows, and the two formats check each other.
-- If it reports overlap conflicts (no running balances and no shared bank reference), set `cutover = <date of the first fetched transaction>` for the source in `config/sources.toml`. CSV data is then used before that date and API data from it on. Pick it once: moving it changes the IDs of transactions in between (dead-pin warnings would show which pins are affected).
+- A new bank's IDs are made from the bank's reference, so `build` reports an `ids` error for a transaction without one.
+- If it reports `ids` errors or overlap conflicts (the formats share no bank reference, or disagree on booking dates or amounts), set `cutover = <date of the first fetched transaction>` for the source in `config/sources.toml`. CSV data is then used before that date and API data from it on. Pick it once: moving it changes the IDs of transactions in between (dead-pin warnings would show which pins are affected).
 
 ## CSV exports (backup)
 

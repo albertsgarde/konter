@@ -84,18 +84,19 @@ A posting with both `amount` and `balance` asserts the balance. Hand-written tra
   - The counterparty name comes from the creditor or debtor.
   - The purchase date is kept (`purchased:` tag), but **booking date** is the transaction date throughout.
 - **Merging per source:**
-  - Deduplicate overlapping files; a disagreement between files is an error. Copies in the same format must agree on everything, booking date and amount included: rows told apart by the bank's reference alone would otherwise let a reference the bank used twice swallow a transaction.
-  - Rows that look alike (same day, amount and running balance) are told apart by counting them oldest first within each file. A file is taken to have every transaction of a day up to the last one it has: it may end partway through a day, but never starts partway or skips a row. So the n-th of a kind is the same row in every file.
-    - With references (Lunar), a row an earlier file had is placed by its reference, not its count, so exports that list one minute's rows in another order agree. A file that starts partway or skips one is an `incomplete day` error naming the file, its row and the look-alike it lacks, which another file has at the same count or the one before. The row stays a transaction of its own, so this is the only error.
-    - Without references (Nordea), such a file shows only indirectly: look-alikes that read differently are a disagreement between files of one format, and ones that read the same lose a transaction and break the balance, unless another file has the whole day, which then gives the same result as that file alone.
+  - Deduplicate overlapping files; a disagreement between files is an error (`overlap conflict`). Copies in the same format must agree on everything, booking date and amount included: rows told apart by the bank's reference alone would otherwise let a reference the bank used twice swallow a transaction. Copies in two formats may describe a transaction differently, but must agree on booking date and amount: the date is part of the ID.
+  - On accounts identified by the running balance (Nordea), rows that look alike (same day, amount and running balance) are told apart by counting them oldest first within each file. A file is taken to have every transaction of a day up to the last one it has: it may end partway through a day, but never starts partway or skips a row. So the n-th of a kind is the same row in every file. A Lunar row is simply the row with its reference.
+    - Fetched data has references as well, so between two fetches a row an earlier file had is placed by its reference, not its count, and files that list look-alikes in another order agree. A file that starts partway or skips one is an `incomplete day` error naming the file, its row and the look-alike it lacks, which another file has at the same count or the one before. The row stays a transaction of its own, so this is the only error.
+    - Where an export is one of the two files (Nordea's exports have no references), such a file shows only indirectly: look-alikes that read differently are a disagreement between files of one format, and ones that read the same lose a transaction and break the balance, unless another file has the whole day, which then gives the same result as that file alone.
     - For a source without running balances or references, nothing can check this.
   - Report rows missing from a file that covers their date.
   - Order rows so the running balance chains; a break is an error. A day with no balance before it (the first, or the one after a break) is put in an order that ends where the next day starts. Where rows could go either way, their order comes from the export with the most rows that day (positions in different files can't be compared), and rows that look alike keep the order they were counted in, so their IDs don't depend on which exports there are.
   - `cutover` picks CSV before a date and API data from it on. Not needed today: the two agree.
-- **IDs** (`<prefix>-<date>-<6 hex>`) must never change, because pins refer to them. They're hashed from:
-  - booking date, amount and running balance, when there is one;
-  - else the bank's reference;
-  - else date, amount and description.
+- **IDs** (`<prefix>-<date>-<6 hex>`) must never change, because pins refer to them, so they mustn't depend on which files a transaction is in. The account, not the row, decides what they're hashed from: what every file of its bank has.
+  - Nordea (bank `nordea`, or `nordea-csv` among its formats): booking date, amount, running balance and the count among rows that look alike. Its exports have no reference; they and its fetched data have the running balance.
+  - Lunar and any other account: the bank's reference, which Lunar's exports and fetched data both have.
+
+  A transaction that lacks what its account's IDs are made from (a Lunar row without a reference, a Nordea row without a running balance) is an `ids` error: its ID would change when a file that has it arrives. With a `cutover` no such file can arrive, since each format has its own dates, so a row is hashed from the best it has: running balance, else reference, else date, amount and description.
 
   So **don't change how descriptions are derived** for sources without balances or references: it would orphan their pins. That's why showing the merchant name instead of a bare reference number is done only in the output (§7), never on the transaction.
 

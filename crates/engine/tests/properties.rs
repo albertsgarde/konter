@@ -327,6 +327,161 @@ fn merging_exports_taken_during_the_day_is_like_merging_one() {
     check_cases("merging-mid-day", 500, |rng, size| split_history(rng, size, true), check_merging);
 }
 
+// ── IDs don't depend on which files there are (docs/spec.md §4) ────────
+
+/// A Lunar account, exported and fetched.
+const LUNAR: &str = r#"
+[books]
+start = 2026-01-01
+
+[sources."lunar:b"]
+bank = "lunar"
+number = "555"
+ledger = "assets:bank:b"
+id_prefix = "lb"
+formats = ["lunar-csv", "enable-banking"]
+unmatched = "allow"
+"#;
+
+/// A Lunar export of `rows`, newest first. `first` is the place of the first
+/// of them in the whole history, which gives each row its reference. Lunar's
+/// exports have a time of day to the minute; here every row has the same.
+fn lunar_csv(rows: &[Row], first: usize) -> String {
+    let mut out = String::from("Date,Time,Title,Amount,Balance,Transaction ID\n");
+    for (i, (day, amount, what, balance)) in rows.iter().enumerate().rev() {
+        out.push_str(&format!("{day:02}.01.2026,12.00,{what},\"{amount},00\",\"{balance},00\",r{}\n", first + i));
+    }
+    out
+}
+
+/// Fetched data of `rows`, oldest first, with the references of `lunar_csv`.
+/// Nordea's has running balances and Lunar's has none.
+fn fetched(rows: &[Row], first: usize, balances: bool) -> String {
+    let rows: Vec<String> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, (day, amount, what, balance))| {
+            let indicator = if amount.is_sign_negative() { "DBIT" } else { "CRDT" };
+            let balance = if balances {
+                format!(r#", "balance_after_transaction": {{"currency": "DKK", "amount": "{balance}"}}"#)
+            } else {
+                String::new()
+            };
+            format!(
+                r#"{{"entry_reference": "r{}", "booking_date": "2026-01-{day:02}", "status": "BOOK", "credit_debit_indicator": "{indicator}", "transaction_amount": {{"currency": "DKK", "amount": "{}"}}, "remittance_information": ["{what}"]{balance}}}"#,
+                first + i,
+                amount.abs()
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"acct_fetch": 1, "fetched_at": "2026-02-01T09:00:00Z", "pages": [{{"transactions": [{}]}}]}}"#,
+        rows.join(", ")
+    )
+}
+
+/// One file of an account: its path under data/, and its text.
+#[derive(Serialize, Deserialize)]
+struct File {
+    rel: String,
+    text: String,
+}
+
+/// A history in exports and fetches, as a case is saved.
+#[derive(Serialize, Deserialize)]
+struct Arrivals {
+    /// Whether the account is with Lunar (else with Nordea).
+    lunar: bool,
+    /// One export of the whole history.
+    whole: File,
+    /// Exports and fetches that together cover it, in the order they arrive.
+    parts: Vec<File>,
+}
+
+/// A history of up to `size` days, at most a week, in exports and fetches
+/// that each start at the beginning of a day and may end during one. Where a
+/// file sorts among the others has nothing to do with when it arrives.
+fn arrivals(rng: &mut Rng, size: usize, lunar: bool) -> Arrivals {
+    let days = i8::try_from(size.min(7)).expect("at most 7");
+    let rows = loop {
+        let rows = history(rng, days);
+        if !rows.is_empty() {
+            break rows;
+        }
+    };
+    let file = |k: usize, range: Range<usize>, fetch: bool| {
+        let (first, rows) = (range.start, &rows[range]);
+        let (folder, text) = match (lunar, fetch) {
+            (true, false) => ("lunar/555", lunar_csv(rows, first)),
+            (false, false) => ("nordea/1234567890", export_csv(rows)),
+            (_, true) => (if lunar { "lunar/555" } else { "nordea/1234567890" }, fetched(rows, first, !lunar)),
+        };
+        File { rel: format!("{folder}/{k:02}.{}", if fetch { "json" } else { "csv" }), text }
+    };
+    let ranges = exports(rng, &rows, true);
+    let mut names: Vec<usize> = (1..=ranges.len()).collect();
+    rng.shuffle(&mut names);
+    let parts = ranges.into_iter().zip(names).map(|(range, k)| file(k, range, rng.below(2) == 1)).collect();
+    Arrivals { lunar, whole: file(0, 0..rows.len(), false), parts }
+}
+
+/// Every transaction with its ID, sorted: what a pin on that ID would map.
+fn identified(data: &SourceData) -> Vec<String> {
+    let mut rows: Vec<String> =
+        data.txs.iter().map(|t| format!("{} {} {} {:?}", t.id, t.booked, fmt_num(t.amount), t.description)).collect();
+    rows.sort_unstable();
+    rows
+}
+
+/// "IDs must never change": as the files of a history arrive one by one,
+/// exports and fetches in any order, every transaction that's there has the
+/// ID it has in one export of the whole history. With all of them, the
+/// transactions are those of that export, and nothing is wrong.
+fn check_arrivals(case: &Arrivals) -> Result<(), String> {
+    let (config, source) = if case.lunar {
+        (config(LUNAR), "lunar:b")
+    } else {
+        (config(&NORDEA.replace("[\"nordea-csv\"]", "[\"nordea-csv\", \"enable-banking\"]")), "bank:a")
+    };
+    let merge = |files: &[File]| {
+        let mut findings = Findings::default();
+        let raw = files
+            .iter()
+            .map(|f| sources::parse_raw(&config, source, &f.rel, &f.text, None).expect("the generated file parses"))
+            .collect();
+        (sources::merge_source(&config, source, raw, &mut findings), findings)
+    };
+    let (whole, _) = merge(std::slice::from_ref(&case.whole));
+    let want = identified(&whole);
+    for arrived in 1..=case.parts.len() {
+        let (data, findings) = merge(&case.parts[..arrived]);
+        let got = identified(&data);
+        let mut left = want.clone();
+        let all_known = got.iter().all(|row| left.iter().position(|w| w == row).map(|i| left.swap_remove(i)).is_some());
+        let complete = arrived < case.parts.len() || (left.is_empty() && !findings.has_errors());
+        if !all_known || !complete {
+            return Err(format!(
+                "with {arrived} of {} files:\n  {}\nfrom the whole history:\n  {}\n{}",
+                case.parts.len(),
+                got.join("\n  "),
+                want.join("\n  "),
+                findings.render(true)
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_nordea_id_is_the_same_whichever_files_have_arrived() {
+    check_cases("ids-nordea", 500, |rng, size| arrivals(rng, size, false), check_arrivals);
+}
+
+#[test]
+fn a_lunar_id_is_the_same_whichever_files_have_arrived() {
+    check_cases("ids-lunar", 500, |rng, size| arrivals(rng, size, true), check_arrivals);
+}
+
 // ── Order-independent rules (docs/spec.md §1) ──────────────────────────
 
 const RULES: [&str; 4] = [

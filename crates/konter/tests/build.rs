@@ -104,7 +104,7 @@ fn priority_resolves_overlap() {
         account = "expenses:coffee"
         "#,
     );
-    assert_eq!(generated.outcomes["lb-2026-01-10-b23a52"].status, Status::Rule("coffee-lunar".into()));
+    assert_eq!(generated.outcomes["lb-2026-01-10-e894d8"].status, Status::Rule("coffee-lunar".into()));
     assert_eq!(generated.outcomes["ba-2026-01-02-ca8e9e"].status, Status::Rule("coffee".into()));
     assert!(!findings.render(true).contains("ambiguous"));
 }
@@ -560,7 +560,7 @@ fn later_on_a_transaction_that_is_mapped_or_missing_is_reported() {
         r#"
         [later."ba-2026-01-15-64ffb9"]
         [later."ba-2026-01-31-000001"]
-        [later."lb-2026-01-10-b23a52"]
+        [later."lb-2026-01-10-e894d8"]
         "#,
     );
     let text = findings.render(true);
@@ -570,7 +570,7 @@ fn later_on_a_transaction_that_is_mapped_or_missing_is_reported() {
     // No such transaction.
     assert!(text.contains(r#"later "ba-2026-01-31-000001" (test.toml): no such transaction"#), "{text}");
     // Ambiguous stays an error: a mark can't hide a problem in the rules.
-    assert!(matches!(generated.outcomes["lb-2026-01-10-b23a52"].status, Status::Ambiguous(_)));
+    assert!(matches!(generated.outcomes["lb-2026-01-10-e894d8"].status, Status::Ambiguous(_)));
     assert!(text.contains("1 transactions match several rules of equal priority"), "{text}");
 }
 
