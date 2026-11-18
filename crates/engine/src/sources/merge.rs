@@ -35,6 +35,16 @@ enum Key {
     Text(Date, Decimal, String, u32),
 }
 
+impl Key {
+    /// The place among rows that look alike (0 for a bank reference).
+    fn occurrence(&self) -> u32 {
+        match self {
+            Key::Balance(.., n) | Key::Text(.., n) => *n,
+            Key::BankRef(_) => 0,
+        }
+    }
+}
+
 /// Summary of one raw file after merging.
 #[derive(Clone, Debug)]
 pub struct FileSummary {
@@ -179,11 +189,12 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
         }
     }
 
-    let mut txs: Vec<BankTransaction> = union.into_values().collect();
+    let (occurrences, mut txs): (Vec<u32>, Vec<BankTransaction>) =
+        union.into_iter().map(|(key, t)| (key.occurrence(), t)).unzip();
     let has_running_balance = !txs.is_empty() && txs.iter().all(|t| t.balance_after.is_some());
     let mut chain_ok = true;
     if has_running_balance {
-        (txs, chain_ok) = in_chain_order(name, txs, findings);
+        (txs, chain_ok) = in_chain_order(name, txs, &occurrences, findings);
     } else {
         txs.sort_by_key(|t| (t.booked, t.time, t.order_hint));
     }
@@ -341,10 +352,15 @@ fn missing(union: &BTreeMap<Key, BankTransaction>, per_file: &[(FileSummary, BTr
 }
 
 /// Step 3, for transactions that all have a running balance: puts them in the
-/// order the balance chains in, and reports where it doesn't. Returns them
-/// with whether the chain is unbroken.
-fn in_chain_order(name: &str, txs: Vec<BankTransaction>, findings: &mut Findings) -> (Vec<BankTransaction>, bool) {
-    let (order, breaks) = chain(&txs);
+/// order the balance chains in, and reports where it doesn't. `occurrences`:
+/// see [`chain`]. Returns them with whether the chain is unbroken.
+fn in_chain_order(
+    name: &str,
+    txs: Vec<BankTransaction>,
+    occurrences: &[u32],
+    findings: &mut Findings,
+) -> (Vec<BankTransaction>, bool) {
+    let (order, breaks) = chain(&txs, occurrences);
     let mut txs: Vec<Option<BankTransaction>> = txs.into_iter().map(Some).collect();
     let ordered = order.into_iter().map(|i| txs[i].take().expect("the chain has every transaction once")).collect();
     let chain_ok = breaks.is_empty();
@@ -397,8 +413,9 @@ fn before(t: &BankTransaction) -> Decimal {
 const DAY_HAS_ONE: &str = "a day that is chained has a transaction";
 
 /// Orders transactions (all with running balances) so each one starts from the
-/// previous one's balance. Returns the order (indices) and descriptions of breaks.
-fn chain(txs: &[BankTransaction]) -> (Vec<usize>, Vec<String>) {
+/// previous one's balance. `occurrences`: each one's place among those that
+/// look alike, from merging. Returns the order (indices) and descriptions of breaks.
+fn chain(txs: &[BankTransaction], occurrences: &[u32]) -> (Vec<usize>, Vec<String>) {
     let mut days: BTreeMap<Date, Vec<usize>> = BTreeMap::new();
     for (i, t) in txs.iter().enumerate() {
         days.entry(t.booked).or_default().push(i);
@@ -406,6 +423,7 @@ fn chain(txs: &[BankTransaction]) -> (Vec<usize>, Vec<String>) {
     let mut days: Vec<(Date, Vec<usize>)> = days.into_iter().collect();
     for (_, idxs) in &mut days {
         idxs.sort_by_key(|&i| (txs[i].time, txs[i].order_hint));
+        alike_in_order(txs, occurrences, idxs);
     }
     let mut order = Vec::with_capacity(txs.len());
     let mut breaks = Vec::new();
@@ -437,6 +455,27 @@ fn chain(txs: &[BankTransaction]) -> (Vec<usize>, Vec<String>) {
         order.extend(day_order);
     }
     (order, breaks)
+}
+
+/// Puts a day's transactions that look alike (same amount and running
+/// balance) in the order they were counted in when merging, keeping the places
+/// they take among the others. The running balance can't tell them apart, so
+/// whichever is tried first goes first; and when their copies come from
+/// different files, their positions in those files can't be compared. Then
+/// adding an export could swap their IDs, and a pin would move from one to the
+/// other.
+fn alike_in_order(txs: &[BankTransaction], occurrences: &[u32], idxs: &mut [usize]) {
+    let mut groups: BTreeMap<(Decimal, Option<Decimal>), Vec<usize>> = BTreeMap::new();
+    for (place, &i) in idxs.iter().enumerate() {
+        groups.entry((txs[i].amount, txs[i].balance_after)).or_default().push(place);
+    }
+    for places in groups.values() {
+        let mut members: Vec<usize> = places.iter().map(|&p| idxs[p]).collect();
+        members.sort_by_key(|&i| occurrences[i]);
+        for (&place, i) in places.iter().zip(members) {
+            idxs[place] = i;
+        }
+    }
 }
 
 /// An order for a day with no balance before it to start from: the first day,

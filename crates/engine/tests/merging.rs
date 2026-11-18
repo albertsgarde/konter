@@ -32,11 +32,18 @@ fn descriptions(data: &SourceData) -> Vec<&str> {
     data.txs.iter().map(|t| t.description.as_str()).collect()
 }
 
+const LUNAR: &str = "[books]\nstart = 2026-01-01\n\n[sources.\"lunar:b\"]\nbank = \"lunar\"\nnumber = \"555\"\n\
+     ledger = \"assets:bank:b\"\nid_prefix = \"lb\"\nformats = [\"lunar-csv\"]\nunmatched = \"allow\"\n";
+
 fn lunar() -> Config {
-    config(
-        "[books]\nstart = 2026-01-01\n\n[sources.\"lunar:b\"]\nbank = \"lunar\"\nnumber = \"555\"\n\
-         ledger = \"assets:bank:b\"\nid_prefix = \"lb\"\nformats = [\"lunar-csv\"]\nunmatched = \"allow\"\n",
-    )
+    config(LUNAR)
+}
+
+const LUNAR_HEADER: &str = "Date,Time,Title,Amount,Balance,Transaction ID\n";
+
+/// Each transaction's ID with what it reads.
+fn history(data: &SourceData) -> Vec<(&str, &str)> {
+    data.txs.iter().map(|t| (t.id.as_str(), t.description.as_str())).collect()
 }
 
 /// A deposit and then a charge of the same amount chain either way round,
@@ -107,9 +114,8 @@ fn a_transaction_is_missing_from_a_file_only_strictly_inside_its_days() {
 #[test]
 fn copies_that_disagree_are_reported_with_their_files() {
     let config = lunar();
-    let header = "Date,Time,Title,Amount,Balance,Transaction ID\n";
-    let one = format!("{header}05.01.2026,09.00,Coffee,\"-10,00\",\"990,00\",r1\n");
-    let other = format!("{header}05.01.2026,09.00,Coffee,\"-12,00\",\"988,00\",r1\n");
+    let one = format!("{LUNAR_HEADER}05.01.2026,09.00,Coffee,\"-10,00\",\"990,00\",r1\n");
+    let other = format!("{LUNAR_HEADER}05.01.2026,09.00,Coffee,\"-12,00\",\"988,00\",r1\n");
     let (_, findings) = merge(&config, "lunar:b", &[("lunar/555/a.csv", &one), ("lunar/555/b.csv", &other)]);
     let conflicts = errors(&findings, "overlap conflict").concat();
     assert!(
@@ -119,7 +125,7 @@ fn copies_that_disagree_are_reported_with_their_files() {
     );
 
     let twice = format!(
-        "{header}06.01.2026,09.00,Tea,\"-5,00\",\"985,00\",r1\n05.01.2026,09.00,Coffee,\"-10,00\",\"990,00\",r1\n"
+        "{LUNAR_HEADER}06.01.2026,09.00,Tea,\"-5,00\",\"985,00\",r1\n05.01.2026,09.00,Coffee,\"-10,00\",\"990,00\",r1\n"
     );
     let (_, findings) = merge(&config, "lunar:b", &[("lunar/555/a.csv", &twice)]);
     let conflicts = errors(&findings, "overlap conflict").concat();
@@ -245,4 +251,73 @@ fn a_file_that_starts_partway_through_a_day_cant_swap_rows_that_look_alike_unnot
         data.txs.iter().map(|t| (t.id.clone(), t.description.clone())).collect()
     };
     assert_eq!(history(&both), history(&alone));
+}
+
+/// Lunar's rows from one minute aren't reliably in order, so a later export
+/// can list two that look alike the other way round, and it's the one that
+/// places them, having more of the day. Each still keeps the place it was
+/// first counted in, and with it its ID.
+#[test]
+fn look_alikes_keep_their_ids_when_a_longer_export_lists_them_the_other_way_round() {
+    let config = lunar();
+    // A purchase, its refund and another purchase, all at 12.00.
+    let first = format!(
+        "{LUNAR_HEADER}04.01.2026,12.00,Kiosk,\"-50,00\",\"950,00\",r3\n\
+         04.01.2026,12.00,Refund,\"50,00\",\"1000,00\",r2\n\
+         04.01.2026,12.00,Bakery,\"-50,00\",\"950,00\",r1\n\
+         03.01.2026,09.00,Salary,\"1000,00\",\"1000,00\",r0\n"
+    );
+    let second = format!(
+        "{LUNAR_HEADER}04.01.2026,13.00,Coffee,\"-10,00\",\"940,00\",r4\n\
+         04.01.2026,12.00,Bakery,\"-50,00\",\"950,00\",r1\n\
+         04.01.2026,12.00,Refund,\"50,00\",\"1000,00\",r2\n\
+         04.01.2026,12.00,Kiosk,\"-50,00\",\"950,00\",r3\n\
+         03.01.2026,09.00,Salary,\"1000,00\",\"1000,00\",r0\n"
+    );
+    let (alone, _) = merge(&config, "lunar:b", &[("lunar/555/a.csv", &first)]);
+    assert_eq!(descriptions(&alone), ["Salary", "Bakery", "Refund", "Kiosk"]);
+    let (both, findings) = merge(&config, "lunar:b", &[("lunar/555/a.csv", &first), ("lunar/555/b.csv", &second)]);
+    assert!(!findings.has_errors(), "{}", findings.render(true));
+    assert_eq!(history(&both)[..4], history(&alone));
+    assert_eq!(descriptions(&both)[4], "Coffee");
+}
+
+/// A fetch of the same account as `LUNAR_HEADER`'s exports, with running
+/// balances: two payments of 100 on the 12th, and a dinner paid between them.
+const FETCH_WITH_BALANCES: &str = r#"{"acct_fetch": 1, "fetched_at": "2026-01-16T09:00:00Z", "pages": [{"transactions": [
+  {"booking_date": "2026-01-05", "transaction_amount": {"currency": "DKK", "amount": "50.00"}, "entry_reference": "r1",
+   "credit_debit_indicator": "DBIT", "remittance_information": ["Groceries"],
+   "balance_after_transaction": {"currency": "DKK", "amount": "100.00"}},
+  {"booking_date": "2026-01-12", "transaction_amount": {"currency": "DKK", "amount": "100.00"}, "entry_reference": "r2",
+   "credit_debit_indicator": "CRDT", "remittance_information": ["MobilePay Alice"],
+   "balance_after_transaction": {"currency": "DKK", "amount": "200.00"}},
+  {"booking_date": "2026-01-12", "transaction_amount": {"currency": "DKK", "amount": "100.00"}, "entry_reference": "r3",
+   "credit_debit_indicator": "DBIT", "remittance_information": ["Club dinner"],
+   "balance_after_transaction": {"currency": "DKK", "amount": "100.00"}},
+  {"booking_date": "2026-01-12", "transaction_amount": {"currency": "DKK", "amount": "100.00"}, "entry_reference": "r4",
+   "credit_debit_indicator": "CRDT", "remittance_information": ["MobilePay Carol"],
+   "balance_after_transaction": {"currency": "DKK", "amount": "200.00"}}
+]}]}"#;
+
+/// A transaction keeps the time of day of its first copy, and takes its place
+/// from the fullest file. An export has times and fetched data has none, so
+/// after a fetch of the whole day the first payment has a time and the second,
+/// which only the fetch has, doesn't, and sorts before it. The first was
+/// counted first, and keeps its ID.
+#[test]
+fn look_alikes_keep_their_ids_when_only_one_of_them_has_a_time_of_day() {
+    let both_formats = LUNAR.replace("formats = [\"lunar-csv\"]", "formats = [\"lunar-csv\", \"enable-banking\"]");
+    let config = config(&both_formats);
+    // Exported on the 12th, after the first payment only.
+    let morning = format!(
+        "{LUNAR_HEADER}12.01.2026,09.00,MobilePay Alice,\"100,00\",\"200,00\",r2\n\
+         05.01.2026,09.00,Groceries,\"-50,00\",\"100,00\",r1\n"
+    );
+    let (alone, _) = merge(&config, "lunar:b", &[("lunar/555/a.csv", &morning)]);
+    assert_eq!(descriptions(&alone), ["Groceries", "MobilePay Alice"]);
+    let files = [("lunar/555/a.csv", morning.as_str()), ("lunar/555/fetch.json", FETCH_WITH_BALANCES)];
+    let (both, findings) = merge(&config, "lunar:b", &files);
+    assert!(!findings.has_errors(), "{}", findings.render(true));
+    assert_eq!(descriptions(&both), ["Groceries", "MobilePay Alice", "Club dinner", "MobilePay Carol"]);
+    assert_eq!(history(&both)[..2], history(&alone));
 }
