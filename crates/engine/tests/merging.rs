@@ -321,3 +321,107 @@ fn look_alikes_keep_their_ids_when_only_one_of_them_has_a_time_of_day() {
     assert_eq!(descriptions(&both), ["Groceries", "MobilePay Alice", "Club dinner", "MobilePay Carol"]);
     assert_eq!(history(&both)[..2], history(&alone));
 }
+
+/// The second export of `a_file_without_an_earlier_look_alike_is_reported`:
+/// a payment and a dinner turn out to come before the payment that the
+/// morning's export had as the day's first.
+fn later_export() -> String {
+    format!(
+        "{LUNAR_HEADER}14.01.2026,09.00,Coffee,\"-20,00\",\"180,00\",r5\n\
+         12.01.2026,09.00,MobilePay Alice,\"100,00\",\"200,00\",r2\n\
+         12.01.2026,08.30,Club dinner,\"-100,00\",\"100,00\",r3\n\
+         12.01.2026,08.00,MobilePay Carol,\"100,00\",\"200,00\",r4\n\
+         05.01.2026,09.00,Groceries,\"-50,00\",\"100,00\",r1\n"
+    )
+}
+
+/// Rows that look alike are told apart by counting them from the start of
+/// the day, so a file has to have every transaction of a day up to the last
+/// one it has. One that has a payment without an earlier one that looks the
+/// same would give the earlier one its ID. The bank's references show it, and
+/// it's an error that names both rows, whichever of the files comes first.
+#[test]
+fn a_file_without_an_earlier_look_alike_is_reported() {
+    let config = lunar();
+    let morning = format!(
+        "{LUNAR_HEADER}12.01.2026,09.00,MobilePay Alice,\"100,00\",\"200,00\",r2\n\
+         05.01.2026,09.00,Groceries,\"-50,00\",\"100,00\",r1\n"
+    );
+    let later = later_export();
+    let (alone, _) = merge(&config, "lunar:b", &[("lunar/555/a.csv", &morning)]);
+    let (alice, carol) = ("2026-01-12     100.00 \"MobilePay Alice\"", "2026-01-12     100.00 \"MobilePay Carol\"");
+
+    // The morning's export first: the later one's first payment counts as
+    // the one already there, and has another reference.
+    let (data, findings) = merge(&config, "lunar:b", &[("lunar/555/a.csv", &morning), ("lunar/555/b.csv", &later)]);
+    let reported = errors(&findings, "incomplete day");
+    assert_eq!(reported.len(), 1, "{}", findings.render(true));
+    assert!(reported[0].contains("lunar:b: 1 rows that look alike don't match up between files"), "{reported:?}");
+    let named = format!(
+        "lunar/555/a.csv has {alice} but not {carol}, which looks the same and takes its place in lunar/555/b.csv"
+    );
+    assert!(reported[0].contains(&named), "{reported:?}");
+    assert!(reported[0].contains("a file must have every transaction of a day up to the last one it has"));
+    // Nothing else is wrong: every row is there once, and the balance chains.
+    assert_eq!(findings.count(Severity::Error), 1, "{}", findings.render(true));
+    assert_eq!(descriptions(&data), ["Groceries", "MobilePay Alice", "Club dinner", "MobilePay Carol", "Coffee"]);
+    assert_eq!(history(&data)[..2], history(&alone));
+
+    // The later export first: the morning's payment is the second of its
+    // kind, and the morning's export doesn't have the first.
+    let (data, findings) = merge(&config, "lunar:b", &[("lunar/555/a.csv", &later), ("lunar/555/b.csv", &morning)]);
+    let reported = errors(&findings, "incomplete day");
+    let named = format!(
+        "lunar/555/b.csv has {alice} but not {carol}, which looks the same and comes before it in lunar/555/a.csv"
+    );
+    assert!(reported.concat().contains(&named), "{}", findings.render(true));
+    assert_eq!(findings.count(Severity::Error), 1, "{}", findings.render(true));
+    assert_eq!(descriptions(&data), ["Groceries", "MobilePay Carol", "Club dinner", "MobilePay Alice", "Coffee"]);
+}
+
+/// A row's reference is what places it when an earlier file had it. A fetch
+/// without running balances that has the day's first payment gives it a
+/// place by its reference, so in a later export the second payment is the
+/// only one that's counted: the second of its kind with no first, and
+/// nothing wrong.
+#[test]
+fn a_look_alike_placed_by_its_reference_isnt_missed() {
+    let both_formats = LUNAR.replace("formats = [\"lunar-csv\"]", "formats = [\"lunar-csv\", \"enable-banking\"]");
+    let config = config(&both_formats);
+    let fetch = r#"{"acct_fetch": 1, "fetched_at": "2026-01-12T10:00:00Z", "pages": [{"transactions": [
+      {"booking_date": "2026-01-12", "transaction_amount": {"currency": "DKK", "amount": "100.00"},
+       "entry_reference": "r2", "credit_debit_indicator": "CRDT", "remittance_information": ["MobilePay Alice"]}
+    ]}]}"#;
+    let export = format!(
+        "{LUNAR_HEADER}12.01.2026,13.00,MobilePay Carol,\"100,00\",\"200,00\",r4\n\
+         12.01.2026,12.00,Club dinner,\"-100,00\",\"100,00\",r3\n\
+         12.01.2026,09.00,MobilePay Alice,\"100,00\",\"200,00\",r2\n"
+    );
+    let files = [("lunar/555/fetch.json", fetch), ("lunar/555/statement.csv", export.as_str())];
+    let (data, findings) = merge(&config, "lunar:b", &files);
+    assert!(!findings.has_errors(), "{}", findings.render(true));
+    assert_eq!(descriptions(&data), ["MobilePay Alice", "Club dinner", "MobilePay Carol"]);
+}
+
+/// Only two references that differ say that two rows are two transactions.
+/// Nordea's exports have none and its fetched data has them, so their copies
+/// of two payments that look alike pair up by counting, whichever comes first.
+#[test]
+fn copies_with_and_without_a_reference_are_the_same_rows() {
+    let both = NORDEA.replace("formats = [\"nordea-csv\"]", "formats = [\"nordea-csv\", \"enable-banking\"]");
+    let config = config(&both);
+    let export = nordea_csv(&[
+        ("2026/01/12", "100,00", "MobilePay Carol", "200,00"),
+        ("2026/01/12", "-100,00", "Club dinner", "100,00"),
+        ("2026/01/12", "100,00", "MobilePay Alice", "200,00"),
+        ("2026/01/05", "-50,00", "Groceries", "100,00"),
+    ]);
+    let rel = nordea_rel("2026-01-13 10.00.00");
+    for fetch_rel in ["nordea/1234567890/fetch.json", "nordea/1234567890/A fetch.json"] {
+        let files = [(rel.as_str(), export.as_str()), (fetch_rel, FETCH_WITH_BALANCES)];
+        let (data, findings) = merge(&config, "bank:a", &files);
+        assert!(!findings.has_errors(), "{fetch_rel}: {}", findings.render(true));
+        assert_eq!(data.txs.len(), 4, "{fetch_rel}: {:?}", descriptions(&data));
+        assert!(data.txs.iter().all(|t| t.origins.len() == 2), "{fetch_rel}");
+    }
+}

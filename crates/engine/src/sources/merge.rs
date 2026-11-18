@@ -1,6 +1,7 @@
 //! Merging a source's raw files (docs/spec.md §4):
 //!
 //! 1. remove duplicates across overlapping files, reporting any disagreement,
+//!    and any file that lacks a row before one it has that looks the same,
 //! 2. report transactions that a file covering their date is missing,
 //! 3. order transactions so the running balance chains, reporting breaks,
 //! 4. assign stable IDs.
@@ -41,6 +42,16 @@ impl Key {
         match self {
             Key::Balance(.., n) | Key::Text(.., n) => *n,
             Key::BankRef(_) => 0,
+        }
+    }
+
+    /// The `n`-th of the rows that look like this one (a bank reference is
+    /// one row's alone).
+    fn nth(&self, n: u32) -> Key {
+        match self {
+            Key::Balance(date, amount, balance, _) => Key::Balance(*date, *amount, *balance, n),
+            Key::Text(date, amount, text, _) => Key::Text(*date, *amount, text.clone(), n),
+            Key::BankRef(reference) => Key::BankRef(reference.clone()),
         }
     }
 }
@@ -175,7 +186,20 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
 
     let formats: BTreeSet<Format> = files.iter().filter(|f| !f.rows.is_empty()).map(|f| f.format).collect();
 
-    let Union { txs: union, per_file, mut conflicts } = deduplicate(files);
+    let Union { txs: union, per_file, mut conflicts, out_of_step } = deduplicate(files);
+    if !out_of_step.is_empty() {
+        findings
+            .error(
+                "incomplete day",
+                format!("{name}: {} rows that look alike don't match up between files", out_of_step.len()),
+            )
+            .details(out_of_step)
+            .detail(
+                "→ rows with the same day, amount and running balance are told apart by counting them from the \
+                 start of the day, so a file must have every transaction of a day up to the last one it has. \
+                 One of these files doesn't, and the IDs of those rows can't be relied on",
+            );
+    }
     conflicts.extend(missing(&union, &per_file));
     if !conflicts.is_empty() {
         let d =
@@ -225,6 +249,9 @@ struct Union {
     per_file: Vec<(FileSummary, BTreeSet<Key>)>,
     /// Where copies of a transaction disagree.
     conflicts: Vec<String>,
+    /// Where a file has a row without one that looks the same and comes
+    /// before it in another file.
+    out_of_step: Vec<String>,
 }
 
 /// Step 1: one copy of each transaction, from files sorted by path.
@@ -235,6 +262,7 @@ fn deduplicate(files: Vec<RawFile>) -> Union {
     let mut by_ref: BTreeMap<String, Key> = BTreeMap::new();
     let mut per_file: Vec<(FileSummary, BTreeSet<Key>)> = Vec::new();
     let mut conflicts = Vec::new();
+    let mut out_of_step = Vec::new();
     // Where in a file a row is (`order_hint`) can only be compared within that
     // file. So a transaction takes its place from the file with the most rows
     // on its day: every export of a day starts at its beginning, so that one
@@ -267,16 +295,30 @@ fn deduplicate(files: Vec<RawFile>) -> Union {
                 Scheme::Text => Key::Text(row.booked, row.amount, row.description.clone(), 0),
             };
             let n = occurrences.entry(base.clone()).or_insert(0);
-            let key = match base {
-                Key::Balance(d, a, b, _) => Key::Balance(d, a, b, *n),
-                Key::Text(d, a, s, _) => Key::Text(d, a, s, *n),
-                k => k,
-            };
+            let key = base.nth(*n);
             *n += 1;
-            let key = match row.bank_ref.as_ref().and_then(|r| by_ref.get(r)) {
+            let mut key = match row.bank_ref.as_ref().and_then(|r| by_ref.get(r)) {
                 Some(known) => known.clone(),
                 None => key,
             };
+            // Counting pairs this row with one the bank gave another
+            // reference: one of the two files lacks a row that the other has
+            // before it. The row goes after the ones already there, so none
+            // is taken for a copy of another.
+            while let Some(other) = union.get(&key)
+                && other.bank_ref.is_some()
+                && row.bank_ref.is_some()
+                && other.bank_ref != row.bank_ref
+            {
+                out_of_step.push(format!(
+                    "{} has {} but not {}, which looks the same and takes its place in {}",
+                    other.origin().file,
+                    short(other),
+                    short(&row),
+                    file.rel
+                ));
+                key = key.nth(key.occurrence() + 1);
+            }
             if let Some(r) = &row.bank_ref {
                 by_ref.entry(r.clone()).or_insert_with(|| key.clone());
             }
@@ -307,9 +349,25 @@ fn deduplicate(files: Vec<RawFile>) -> Union {
                 }
             }
         }
+        // A file that has the n-th of a kind has the ones before it.
+        for key in &keys {
+            let Some(n) = key.occurrence().checked_sub(1) else { continue };
+            let before = key.nth(n);
+            if !keys.contains(&before)
+                && let (Some(row), Some(earlier)) = (union.get(key), union.get(&before))
+            {
+                out_of_step.push(format!(
+                    "{} has {} but not {}, which looks the same and comes before it in {}",
+                    summary.rel,
+                    short(row),
+                    short(earlier),
+                    earlier.origin().file
+                ));
+            }
+        }
         per_file.push((summary, keys));
     }
-    Union { txs: union, per_file, conflicts }
+    Union { txs: union, per_file, conflicts, out_of_step }
 }
 
 /// What `row`, in the file `rel`, says differently from the copy of the same
