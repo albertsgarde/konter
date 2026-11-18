@@ -1,22 +1,24 @@
 ---
 name: konter-review
-description: "Review a change to konter (the tool in this repo) against the repo's own rules: nothing private in a public repo, the spec, tests, panics, lints, types and commit descriptions. Use when asked to review a commit or a range, and before anything is pushed. Takes a jj revset; by default everything that isn't pushed yet."
-argument-hint: "[revset]"
+description: "Review a change to konter (the tool in this repo) against the repo's own rules: nothing private in a public repo, the spec, tests, panics, lints, types and commit descriptions. Use when asked to review a commit or a range, and before anything is pushed. Takes a jj revset; by default everything that isn't pushed yet. With `deep` first, each commit gets its own reader, which takes about twice as long and finds more."
+argument-hint: "[deep] [revset]"
 context: fork
 background: false
-allowed-tools: Read, Grep, Glob, Bash(jj log *), Bash(jj diff *), Bash(jj show *), Bash(jj st), Bash(jj -R books st), Bash(just more check), Bash(just more leaks *), Bash(just more mutants *), Bash(just more konter verify), Bash(rg *)
+allowed-tools: Read, Grep, Glob, Agent, Bash(jj log *), Bash(jj diff *), Bash(jj show *), Bash(jj st), Bash(jj -R books st), Bash(just more check), Bash(just more leaks *), Bash(just more mutants *), Bash(just more konter verify), Bash(rg *)
 ---
 
 You review a change to konter, the tool in this repo, against the repo's own rules. You report; you don't fix.
 
 The revset to review (if nothing follows the colon, it's `trunk()..@`, everything not pushed yet): $ARGUMENTS
 
+If that starts with the word `deep`, the rest is the revset (still `trunk()..@` when nothing is left), and the commits are read in parallel ("With `deep`: one reader per commit", below).
+
 Below it's `<revset>`; quote it in single quotes in every command.
 
 Several rules below say "unless that's deliberate". You can't ask the author, so deliberate means written down: in the commit description, in `docs/spec.md`, or in a `reason` next to the code. A change that weakens a guard or changes behaviour without saying so is a finding even when it looks sensible.
 
 ## Ground rules
-- The whole review should take about ten minutes. When something would take it well past that, skip it, and say in the report what you skipped and the command that runs it.
+- The whole review should take about ten minutes. When something would take it well past that, skip it, and say in the report what you skipped and the command that runs it. Most of the time is reading, so the checks run in the background meanwhile.
 - Read only: no edits, no commits, no jj command that changes anything, since other agents share the working copy. The checks build in `target/`. A test run can leave a failing property case under `crates/engine/tests/cases/` (which doesn't exist until a case has failed) or a `*.snap.new` next to a snapshot: leave them, and report them. Every jj command snapshots the working copy, so the next one takes a saved case into `@`, another reason to report it. A `*.snap.new` is ignored, so it shows in no diff: look for one on disk.
 - To prove a finding you may build and run code in a scratch folder outside the repo: a small crate against the working copy, or against `git archive` of an older commit. Do it when it takes a few minutes at most. A finding you reproduced says so; one you didn't says it's from reading and how it could be reproduced.
 - Only the tool is under review. Read `books/` only to compare with; it isn't reviewed here.
@@ -28,18 +30,35 @@ Several rules below say "unless that's deliberate". You can't ask the author, so
 - If it includes `@` with changes, that's uncommitted work, possibly several agents', and never ready to push as it is. Review what it holds and say so in the report; its missing description isn't a finding.
 - Read `docs/spec.md` in full (about 200 lines) before you judge anything.
 
-## 2. Run the checks first
-Run them first, and report for each that it ran and what it said, or why it didn't run. Green checks aren't a verdict: they cover only what they cover, and a change that mostly deletes code can pass them all and still be wrong.
+## 2. Start the checks, read while they run
+If another reviewer gave you a commit to read, skip this section (see the next).
+
+After section 1's `jj log`, which says what's under review, run `jj -R books st`, `just more leaks '<revset>'` and the mutants' `--list` (below) in the foreground, one after the other: a second each, and the list's count decides whether the mutants run. Then start the rest in one message, each as its own Bash call with `run_in_background: true`: `just more check`, `just more konter verify` and, with up to about 15 mutants, `just more mutants '<revset>'`. They don't get in each other's way: `check` builds the debug profile, `verify` the release profile, and cargo-mutants works in its own copy of the tree. Don't wait for them: go on to the reading. A notification comes as each one ends; read its output then. Don't write the report before every check has ended; only the mutants may be left unfinished (below).
+
+From then on, every jj command, yours and the readers', has `--ignore-working-copy` after the subcommand (`jj show --ignore-working-copy --git <change>`): it reads the commits as they were at the last snapshot and takes no new one. jj commands that snapshot at the same time can leave `@` divergent, and other agents share it.
+
+Report for each that it ran and what it said, or why it didn't run. Green checks aren't a verdict: they cover only what they cover, and a change that mostly deletes code can pass them all and still be wrong.
 - `just more check`: formatting, clippy with every warning an error, every crate's tests, and the docs. The property tests draw new cases on every run, so a green run is one sample. The lints already forbid `unwrap` (tests included), `panic!` outside tests, slicing text (`&s[a..b]`), floats, lossy casts, wildcard arms on our own enums and more, so don't look for those by eye; check instead that the lints are still there (section 3). It checks the working copy, not each commit. A failure in code the change doesn't touch is probably someone else's work in progress: report it as that.
 - `just more leaks '<revset>'`: what the change adds that might be private, each commit and its description read on its own. Exit 1 means there are candidates to judge (section 4).
 - `just more konter verify`, when there are books in `books/`: rebuilds them with the tool's working copy and compares with the journals in `books/ledger/`. Success is a `✓ verify … is up to date` line for each of the three journals and `hledger check --strict` passing. A difference means the change alters the books (transaction IDs, order or amounts): a finding unless the description says it was meant to. IDs must never change, since pins refer to them (spec §4). Run `jj -R books st` first: uncommitted changes in the books can make it fail too, and then it says nothing about the tool.
 - `just more mutants '<revset>' 4 --list`, when the change touches Rust code outside tests and outside `crates/relay`: lists the mutants, small changes to the changed lines, in a second, and checks the exclusions.
-  - With up to about 15, run `just more mutants '<revset>'` with a 4-minute timeout (11 to 14 mutants took under two minutes). With more, don't run it: give the count, and `just more mutants '<revset>'` for the owner to run.
+  - With up to about 15, run `just more mutants '<revset>'` in the background (11 to 14 mutants took under two minutes). If it hasn't ended when the rest of the review is done, report it as not finished, with the command. With more, don't run it: give the count, and `just more mutants '<revset>'` for the owner to run.
   - `--in-diff` also takes in the unchanged lines next to a change. A mutant missed on a line the change didn't touch is an older gap: report it as a suggestion, not against the change.
   - The tests run on the working copy. If `@` is outside the revset and changes the same files, say the result may be off.
   - `--in-diff` only changes lines that are still there, so it says nothing about code a commit removed (section 6).
   - The recipe exits 2 when a mutant is missed and 3 when one only timed out. A missed mutant is a change no test notices: a finding under section 6, unless it truly changes nothing, which the author has to show with an entry and a reason in `.cargo/mutants.toml`. Caught, unviable and timed out are fine.
   - If the recipe stops because an exclusion doesn't match exactly one mutant, the change moved code that `.cargo/mutants.toml` points at by line and column, and that file has to follow: a finding.
+
+## With `deep`: one reader per commit
+If another reviewer gave you a commit to read, skip this section and the checks: you're that reader.
+
+When `deep` was asked for and the range has two or more commits with changes (`@` with changes counts), start one reader per commit while the checks run: `Agent`, general-purpose, all calls in one message so they run at once. Up to five readers; with more commits, put the smallest together, or ones that touch the same files. Without `deep`, with one commit, or with no `Agent` tool, read every commit yourself: the sections below, in order.
+
+Tell each reader its change ID(s); to take about five minutes; to read this file (`.claude/skills/konter-review/SKILL.md`) and `docs/spec.md` in full; that it's one of several readers, so it starts no subagents and runs none of the checks; to give every jj command `--ignore-working-copy` after the subcommand; to apply sections 3 to 8 and 10 to its commit, and from section 9 whether the description says what the commit does; that the ground rules hold for it (read only, it may prove a finding in a scratch folder, nothing from the books goes into the repo); and to answer with its findings in the report's shape (kind, place, rule, what's wrong, what would settle it, reproduced or from reading), or `No findings.`.
+
+Keep for yourself what no single reader sees: the checks and what they turn up (a missed mutant, a difference in `verify`, the leak scan's candidates, which are section 4's first bullet), the form of every description (section 9), and what only shows across commits: a spec change in a different commit than its code, a commit that undoes another, a leak that a later commit removes. The `Agent` calls return only when every reader has answered, and nothing else gets done meanwhile, so do this part after they return.
+
+When the readers have answered, look at the place each finding points at before it goes into the report, and merge findings that are the same. You may change the kind a reader gave a finding; say that you did. A reader's finding you leave out is named in the report, with why.
 
 ## 3. Guards weakened
 Look for each of these in the diff. Each is a finding unless the description says so and a reason is written where it applies.
@@ -117,4 +136,5 @@ Your whole answer, in this shape:
   - **Fix**: a failing check, a broken promise of the spec, a panic an input can reach, changed behaviour without a test, a guard weakened without a word.
   - **Say so**: looks deliberate but isn't written down; the description or the spec has to say it.
   - **Suggestion**: types, names, anything that's a preference.
-- No praise, no walk through the diff. If you're unsure of a finding, say what you'd need to know. With no findings, the first line and the checks are the whole report.
+- After the findings, when there are any of these, in this order: what was skipped, with the command that runs it; a reader's findings left out, with why; what section 4 says to mention to the owner without it being a finding.
+- No praise, no walk through the diff. If you're unsure of a finding, say what you'd need to know. With no findings, the first line, what was reviewed and the checks are the whole report.
