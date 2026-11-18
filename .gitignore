@@ -3,6 +3,9 @@
 /result
 /crates/konter/tests/fixtures/*/ledger/generated.journal
 /crates/konter/tests/fixtures/*/ledger/forecast.journal
+# What a failing snapshot test got, written next to the snapshot it expected,
+# for `cargo insta review` to accept or reject.
+*.snap.new
 
 # Private, never part of this repo: the books (their own repo) and my notes.
 # `just setup` adds the same to .git/info/exclude and jj's snapshot.auto-track.
