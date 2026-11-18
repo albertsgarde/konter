@@ -35,6 +35,13 @@ cognitive_complexity = "warn"
 too_many_lines = "warn"
 # An `expect` says what was taken for granted, in tests too.
 unwrap_used = "warn"
+# A panic means the code is wrong, never the input: outside tests, one is an
+# `expect` or an `unreachable!` that says what was taken for granted
+# (clippy.toml lets tests panic, which is how they fail).
+panic = "warn"
+# Slicing text panics inside a letter of more than one byte, and bank text
+# has æ, ø and å.
+string_slice = "warn"
 # A new variant has to be handled wherever its enum is matched.
 wildcard_enum_match_arm = "warn"
 allow_attributes_without_reason = "warn"

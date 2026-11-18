@@ -13,7 +13,7 @@ use rust_decimal::Decimal;
 use super::RawFile;
 use crate::config::{Format, Source};
 use crate::findings::Findings;
-use crate::hash::sha256_hex;
+use crate::hash::sha256_hex_start;
 use crate::model::BankTransaction;
 use crate::money::{canonical, fmt_num};
 
@@ -375,7 +375,7 @@ fn assign_ids(name: &str, prefix: &str, txs: &mut [BankTransaction], findings: &
             Scheme::Text => format!("{name}\x1f{}\x1f{}\x1f{}\x1f{n}", t.booked, canonical(t.amount), t.description),
         };
         *n += 1;
-        t.id = format!("{prefix}-{}-{}", t.booked, &sha256_hex(material.as_bytes())[..6]);
+        t.id = format!("{prefix}-{}-{}", t.booked, sha256_hex_start(material.as_bytes(), 6));
         if !seen.insert(t.id.clone()) {
             findings.error("ids", format!("{name}: duplicate transaction ID {} (hash collision)", t.id));
         }

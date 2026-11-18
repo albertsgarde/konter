@@ -1,0 +1,4 @@
+# Settings for the lints picked in Cargo.toml.
+
+# A test fails by panicking, so `panic!` with what went wrong is fine there.
+allow-panic-in-tests = true

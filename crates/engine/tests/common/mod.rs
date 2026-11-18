@@ -186,6 +186,7 @@ const SEED: &str = "KONTER_TEST_SEED";
 /// saved before the test fails, and fails every run from then on until
 /// what's wrong is fixed. What's saved is the case and not its seed, so it
 /// stays the same case when the generator changes.
+#[expect(clippy::panic, reason = "it fails the test that called it, and says which case did it")]
 pub fn check_cases<C: Serialize + DeserializeOwned>(
     name: &str,
     fresh: u64,

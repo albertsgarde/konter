@@ -11,7 +11,7 @@ use konter_engine::config::{Config, Format};
 use konter_engine::dates::Period;
 use konter_engine::engine::{Status, fallback_account};
 use konter_engine::findings::{Findings, Severity};
-use konter_engine::hash::sha256_hex;
+use konter_engine::hash::{sha256_hex, sha256_hex_start};
 use konter_engine::journal::render_transaction;
 use konter_engine::model::{BankTransaction, name_instead, quoted_description};
 use konter_engine::money::fmt_num;
@@ -827,7 +827,7 @@ fn start_link(config: &Config, bank: &str, days: u64) -> Result<(String, fetch::
     let max_secs = aspsp.get("maximum_consent_validity").and_then(|v| v.as_u64()).unwrap_or(90 * 86_400);
     let now = fetch::now_secs()?;
     let valid_until = fetch::rfc3339(now + (days * 86_400).min(max_secs));
-    let state = sha256_hex(format!("{now}-{}", std::process::id()).as_bytes())[..16].to_string();
+    let state = sha256_hex_start(format!("{now}-{}", std::process::id()).as_bytes(), 16);
     let url = client.start_auth(&eb.aspsp, &eb.country, &valid_until, &state, &settings.redirect_url)?;
     Ok((url, fetch::PendingLink { state, valid_until }))
 }
