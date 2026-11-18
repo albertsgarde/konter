@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Lists what a change adds to this repo that might be private. This repo is
+# public and the books aren't, so nothing from them may end up here.
+#
+#   scripts/leak-scan [revset]      default: trunk()..@, what isn't pushed yet
+#
+# It reads every commit on its own, its description and the lines and paths it
+# adds: a leak that a later commit removes is still in the history. It looks for
+#   - what a secret or an identifier looks like: keys, tokens, IBANs, long
+#     numbers, UUIDs, home folders, e-mail addresses and Matrix IDs;
+#   - what the books hold, if they're there: transaction IDs, long numbers,
+#     payees, the banks' own texts, account names, and rule and subscription
+#     names.
+# A string the repo already had before the change isn't reported, so `::@`
+# (everything, with nothing before it) is the audit of the whole history.
+#
+# What it prints are candidates for someone to judge, and they can quote the
+# books: keep its output out of this repo, commit descriptions included. It
+# can't see data that was retyped, a name shorter than what it looks for, or a
+# real date and amount in a made-up row. Exits 1 when there is something to
+# look at, and 2 when it couldn't look.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+revset=${1:-'trunk()..@'}
+books=${KONTER_BOOKS:-books}
+[ -d .jj ] || { echo "leak-scan reads the commits with jj, and this clone has no .jj/." >&2; exit 2; }
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# The first jj command takes in the working copy; the others leave it alone.
+jj log --no-graph -r "($revset) & ~root()" -T 'commit_id ++ " " ++ change_id.shortest(8) ++ "\n"' > "$tmp/commits" || exit 2
+if [ ! -s "$tmp/commits" ]; then
+    echo "No commits in $revset."
+    exit 0
+fi
+jj --ignore-working-copy log --no-graph -r "roots(($revset) & ~root())- & ~root()" -T 'commit_id ++ "\n"' > "$tmp/base"
+
+# One row per added line: change, file, line number, text. The lock files are
+# left out (they're all hashes), and so is a description's Co-Authored-By line.
+while read -r commit change; do
+    jj --ignore-working-copy log --no-graph -r "$commit" -T description \
+        | awk -v c="$change" '!/^Co-Authored-By: / { print c "\t(description)\t" NR "\t" $0 }'
+    jj --ignore-working-copy diff --git -r "$commit" | awk -v c="$change" '
+        /^diff --git / { inhunk = 0; file = ""; skip = 0; next }
+        !inhunk && /^\+\+\+ / {
+            file = $0; sub(/^\+\+\+ (b\/)?/, "", file)
+            skip = (file ~ /(^|\/)(Cargo|flake)\.lock$/)
+            if (file != "/dev/null" && !skip) print c "\t" file "\t0\t" file
+            next
+        }
+        !inhunk && /^Binary files / { print c "\t(binary)\t0\t" $0; next }
+        /^@@ / { inhunk = 1; split($3, at, /[+,]/); n = at[2]; next }
+        !inhunk || skip { next }
+        /^\+/ { print c "\t" file "\t" n "\t" substr($0, 2); n++; next }
+        /^-/ || /^\\/ { next }
+        { n++ }'
+done < "$tmp/commits" > "$tmp/rows"
+cut -f4- "$tmp/rows" > "$tmp/text"
+
+# Each check adds "line<TAB>kind<TAB>what matched" to the hits.
+: > "$tmp/hits"
+pattern() {
+    { grep -n -o -E -e "$2" "$tmp/text" || true; } | awk -v kind="$1" '{ i = index($0, ":"); print substr($0, 1, i - 1) "\t" kind "\t" substr($0, i + 1) }' >> "$tmp/hits"
+}
+pattern "private key" '-----BEGIN [A-Z ]*PRIVATE KEY'
+pattern "token" 'eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]+'
+pattern "token" '\b(syt|mat|mct)_[A-Za-z0-9_-]{10,}'
+pattern "secret" '(secret|token|password|passwd|api[_-]?key)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"'[:space:]]{12,}'
+pattern "long opaque string" '\b[A-Za-z0-9]{40,}\b'
+pattern "IBAN" '\b[A-Z]{2}[0-9]{2}([ ]?[0-9A-Z]{4}){3,7}([ ]?[0-9A-Z]{1,3})?\b'
+pattern "CPR number" '\b[0-3][0-9][01][0-9]{3}-[0-9]{4}\b'
+pattern "long number" '\b[0-9]{10,}\b'
+pattern "UUID" '\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'
+pattern "home folder" '(/home|/Users)/[A-Za-z0-9._-]+'
+pattern "e-mail address" '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
+pattern "Matrix ID" '[@!#][A-Za-z0-9._=/+-]+:[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
+if grep -q -P '\t\(binary\)\t' "$tmp/rows"; then
+    grep -n -P '\t\(binary\)\t' "$tmp/rows" | awk -F'\t' '{ i = index($0, ":"); print substr($0, 1, i - 1) "\tbinary file, not read\t" $4 }' >> "$tmp/hits"
+fi
+
+# What the books hold, matched as whole words, whatever the case.
+from_books() {
+    sed 's/[[:space:]]*$//; s/^[[:space:]]*//' | awk 'length($0) > 0' | sort -u > "$tmp/strings"
+    [ -s "$tmp/strings" ] || return 0
+    wc -l < "$tmp/strings" >> "$tmp/counted"
+    { grep -n -o -w -i -F -f "$tmp/strings" "$tmp/text" || true; } | awk -v kind="$1" '{ i = index($0, ":"); print substr($0, 1, i - 1) "\t" kind "\t" substr($0, i + 1) }' >> "$tmp/hits"
+}
+: > "$tmp/counted"
+journal="$books/ledger/generated.journal"
+if [ -d "$books/data" ] || [ -f "$journal" ]; then
+    with_books=true
+    # Without jq the texts in fetched data and the journal's bank comments
+    # would go unread, and the scan would say it had found nothing.
+    command -v jq > /dev/null || { echo "leak-scan needs jq to read the books' JSON." >&2; exit 2; }
+    # A folder or a file that isn't there, or that can't be read as what its
+    # name says, just adds nothing.
+    set +o pipefail
+    find "$books/config" "$books/data" -type f ! -name MANIFEST -print0 2>/dev/null | xargs -0 -r cat > "$tmp/raw"
+    cat "$tmp/raw" "$journal" 2>/dev/null | grep -o -E '[a-z]+-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{6}' | from_books "transaction ID from the books"
+    grep -o -E '[0-9]{8,}' "$tmp/raw" | from_books "number from the books"
+    {
+        # The texts the banks sent, of more than one word (a single word is
+        # rarely private, and too often an ordinary one): JSON strings, and
+        # CSV fields below the header.
+        find "$books/data" -type f -name '*.json' -print0 2>/dev/null | xargs -0 -r jq -r '.. | strings' 2>/dev/null
+        find "$books/data" -type f -name '*.csv' -print0 2>/dev/null | xargs -0 -r tail -q -n +2 | tr ';,\t"' '\n\n\n\n'
+    } | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'length($0) >= 8 && /[[:alpha:]]/ && / / && !/^[0-9T:.Z+ -]+$/' | from_books "text from the bank data"
+    if [ -f "$journal" ]; then
+        {
+            grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} ' "$journal" | sed -E 's/^[0-9-]+ ([*!] )?//; s/  ;.*$//; s/ \| /\n/'
+            sed -n -E 's/^[[:space:]]*; bank: (".*")[[:space:]]*$/\1/p' "$journal" | jq -r . 2>/dev/null
+        } | awk 'length($0) >= 6' | from_books "payee or bank text from the books"
+        sed -n -E 's/^account ([^ ;]+).*/\1/p' "$journal" | awk -F: 'NF >= 3' | from_books "account from the books"
+        grep -o -E '(rule|subscription|pays):[^, ]+' "$journal" | cut -d: -f2- | awk 'length($0) >= 8' | from_books "rule or subscription from the books"
+    fi
+    set -o pipefail
+else
+    with_books=false
+fi
+
+# A string the repo had before the change is nothing new.
+: > "$tmp/known"
+if [ -s "$tmp/base" ] && [ -s "$tmp/hits" ]; then
+    cut -f3 "$tmp/hits" | sort -u > "$tmp/matched"
+    # shellcheck disable=SC2046
+    { git grep -h -o -i -F -f "$tmp/matched" $(cat "$tmp/base") -- . ':!Cargo.lock' ':!flake.lock' || true; } \
+        | tr '[:upper:]' '[:lower:]' | sort -u > "$tmp/known"
+fi
+
+awk -F'\t' '
+    FILENAME == ARGV[1] { known[$0] = 1; next }
+    FILENAME == ARGV[2] { row[FNR] = $0; next }
+    known[tolower($3)] { next }
+    !seen[$0]++ {
+        split(row[$1], r, "\t")
+        text = row[$1]; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t/, "", text)
+        if (length(text) > 160) text = substr(text, 1, 160) "…"
+        where = r[2]; if (r[3] != "0") where = where ":" r[3]
+        print $1 "\t" r[1] " " where ": " $2 ": " $3 "\t" text
+    }' "$tmp/known" "$tmp/rows" "$tmp/hits" | sort -t "$(printf '\t')" -k1,1n -s > "$tmp/found"
+
+checked="the general patterns"
+if $with_books; then
+    checked="$checked and $(awk '{ n += $1 } END { print n + 0 }' "$tmp/counted") strings from $books/"
+else
+    checked="$checked only: there are no books at $books/ to compare with"
+fi
+commits=$(wc -l < "$tmp/commits")
+if [ ! -s "$tmp/found" ]; then
+    echo "Nothing found in $commits commit(s) of $revset, checked for $checked."
+    exit 0
+fi
+awk -F'\t' '{ print $2; if ($1 != last) print "    " $3; last = $1 }' "$tmp/found"
+echo
+echo "$(wc -l < "$tmp/found") to look at in $commits commit(s) of $revset, checked for $checked."
+exit 1

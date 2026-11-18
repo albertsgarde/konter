@@ -1,6 +1,7 @@
 # For the occasional mutation run of the engine: `cargo mutants -p konter-engine`.
 # It changes the engine one small piece at a time and lists the changes that
-# no test notices.
+# no test notices. `just more mutants` does the same in every crate but
+# konter-relay, for the lines of a change only.
 
 # Every crate's tests exercise the engine, so all of them run for each change.
 test_package = ["konter-engine", "konter", "konter-diagnostics", "konter-repo", "konter-report"]

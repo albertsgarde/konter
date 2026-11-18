@@ -46,6 +46,45 @@ test:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
+# This repo is public and the books aren't. Each commit is read on its own,
+# description included, since a leak that a later commit removes is still in
+# the history. What's printed can quote the books, so it stays out of this repo.
+[doc("What a change adds that might be private: `just more leaks [revset]`, by default what isn't pushed. `::@` is the whole history.")]
+leaks revset="trunk()..@":
+    scripts/leak-scan {{quote(revset)}}
+
+# cargo-mutants changes the code one small piece at a time and lists the
+# changes no test notices (.cargo/mutants.toml). On a change's lines that takes
+# minutes; the whole engine takes half an hour. The tests run on the working
+# copy, so a revset that ends below it is only right while its lines haven't
+# moved. konter-relay is left out: its tests aren't among those that run.
+# --workspace, because the default member is konter alone. First it checks the
+# exclusions, which are matched by line and column: one that matches no mutant
+# was left behind when its code moved.
+[doc("Mutation testing of the lines a change touches: `just more mutants [revset] [jobs]`, by default what isn't pushed. `--list` after them only lists the mutants.")]
+mutants revset="trunk()..@" jobs="4" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo mutants --version > /dev/null 2>&1 || { echo "cargo-mutants isn't installed: \`cargo install cargo-mutants\`." >&2; exit 1; }
+    all=$(cargo mutants --no-config --workspace --list)
+    exclusions=$(sed -n "s/^ *'\(.*\)',\$/\1/p" .cargo/mutants.toml)
+    stale=false
+    while IFS= read -r exclusion; do
+        [ -n "$exclusion" ] || continue
+        n=$(grep -c -E -- "$exclusion" <<< "$all" || true)
+        if [ "$n" != 1 ]; then
+            echo ".cargo/mutants.toml: '$exclusion' matches $n mutants, not one." >&2
+            stale=true
+        fi
+    done <<< "$exclusions"
+    if $stale; then exit 1; fi
+    echo "The $(grep -c . <<< "$exclusions") exclusions in .cargo/mutants.toml each match one mutant."
+    mkdir -p target/mutants-diff
+    diff=$(mktemp target/mutants-diff/XXXXXX.diff)
+    trap 'rm -f "$diff"' EXIT
+    jj diff --git -r "$1" > "$diff"
+    cargo mutants --workspace --exclude 'crates/relay/**' --in-diff "$diff" --output target/mutants-diff --jobs "$2" "${@:3}"
+
 # Run any konter subcommand.
 konter *args: _check-setup
     {{konter}} "$@"
