@@ -197,3 +197,52 @@ fn a_day_that_doesnt_chain_is_reported_without_trying_every_order() {
     let breaks = errors(&findings, "balance chain").concat();
     assert!(breaks.contains("on 2026-01-05: the day's transactions don't form a chain"), "{breaks}");
 }
+
+/// Rows that look alike (same day, amount and running balance) are told
+/// apart by counting them from the day's beginning, which every export of a
+/// day has. Neither bank makes a file that starts partway through a day, and
+/// one that does can't pass unnoticed: its later row is taken for the earlier
+/// one, and either the two read differently, or a transaction goes missing
+/// and the running balance breaks. Only when a longer file has both rows and
+/// they read the same is nothing said, and then nothing is wrong either.
+#[test]
+fn a_file_that_starts_partway_through_a_day_cant_swap_rows_that_look_alike_unnoticed() {
+    let config = config(NORDEA);
+    // Two payments of 100 come in on the 12th, with a dinner paid between them.
+    let day = |first: &'static str, second: &'static str| {
+        [
+            ("2026/01/14", "-20,00", "Coffee", "180,00"),
+            ("2026/01/12", "100,00", second, "200,00"),
+            ("2026/01/12", "-100,00", "Club dinner", "100,00"),
+            ("2026/01/12", "100,00", first, "200,00"),
+            ("2026/01/05", "-50,00", "Groceries", "100,00"),
+        ]
+    };
+    let (early_rel, late_rel) = (nordea_rel("2026-01-13 10.00.00"), nordea_rel("2026-01-15 10.00.00"));
+
+    // From two people: the file without the first payment has the second in its place.
+    let rows = day("MobilePay Alice", "MobilePay Carol");
+    let (whole, tail) = (nordea_csv(&rows), nordea_csv(&rows[..3]));
+    let (_, findings) = merge(&config, "bank:a", &[(&early_rel, &whole), (&late_rel, &tail)]);
+    let conflicts = errors(&findings, "overlap conflict").concat();
+    assert!(conflicts.contains("description: \"MobilePay Alice\" vs \"MobilePay Carol\""), "{}", findings.render(true));
+
+    // Both from one person, and no file with the whole day: the second
+    // payment is taken for a copy of the first, and the balance doesn't add up.
+    let rows = day("MobilePay Alice", "MobilePay Alice");
+    let (head, tail) = (nordea_csv(&rows[3..]), nordea_csv(&rows[..3]));
+    let (data, findings) = merge(&config, "bank:a", &[(&early_rel, &head), (&late_rel, &tail)]);
+    assert_eq!(data.txs.len(), 4, "{:?}", descriptions(&data));
+    assert_eq!(errors(&findings, "balance chain").len(), 1, "{}", findings.render(true));
+
+    // Both from one person, and a file with the whole day: the same history
+    // as from that file alone.
+    let whole = nordea_csv(&rows);
+    let (both, findings) = merge(&config, "bank:a", &[(&early_rel, &whole), (&late_rel, &tail)]);
+    assert!(!findings.has_errors(), "{}", findings.render(true));
+    let (alone, _) = merge(&config, "bank:a", &[(&early_rel, &whole)]);
+    let history = |data: &SourceData| -> Vec<(String, String)> {
+        data.txs.iter().map(|t| (t.id.clone(), t.description.clone())).collect()
+    };
+    assert_eq!(history(&both), history(&alone));
+}

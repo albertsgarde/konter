@@ -85,9 +85,9 @@ A posting with both `amount` and `balance` asserts the balance. Hand-written tra
   - The purchase date is kept (`purchased:` tag), but **booking date** is the transaction date throughout.
 - **Merging per source:**
   - Deduplicate overlapping files; a disagreement between files is an error. Copies in the same format must agree on everything, booking date and amount included: rows told apart by the bank's reference alone would otherwise let a reference the bank used twice swallow a transaction.
-  - Rows that look alike (same day, amount and running balance, say) are told apart by counting them oldest first within each file. Every export of a day starts at its beginning, while one taken during the day ends partway, so the n-th of a kind is the same row in each.
+  - Rows that look alike (same day, amount and running balance, say) are told apart by counting them oldest first within each file. Every export of a day starts at its beginning, while one taken during the day ends partway, so the n-th of a kind is the same row in each. Neither bank makes a file that starts partway through a day, and with running balances one can't pass unnoticed: look-alikes that read differently are reported as a disagreement between the files, and ones that read the same lose a transaction and break the balance, unless another file has the whole day, which then gives the same result as that file alone. For a source without running balances or references, nothing can check this.
   - Report rows missing from a file that covers their date.
-  - Order rows so the running balance chains; a break is an error. A day with no balance before it (the first, or the one after a break) is put in an order that ends where the next day starts. Where rows could go either way, their order comes from the export with the most rows that day (positions in different files can't be compared), and rows that look alike keep the order they were counted in, so their IDs don't depend on which exports there are.
+  - Order rows so the running balance chains; a break is an error. A day with no balance before it (the first, or the one after a break) is put in an order that ends where the next day starts. Where rows could go either way, their order comes from the export with the most rows that day (positions in different files can't be compared).
   - `cutover` picks CSV before a date and API data from it on. Not needed today: the two agree.
 - **IDs** (`<prefix>-<date>-<6 hex>`) must never change, because pins refer to them. They're hashed from:
   - booking date, amount and running balance, when there is one;
@@ -95,6 +95,8 @@ A posting with both `amount` and `balance` asserts the balance. Hand-written tra
   - else date, amount and description.
 
   So **don't change how descriptions are derived** for sources without balances or references: it would orphan their pins. That's why showing the merchant name instead of a bare reference number is done only in the output (§7), never on the transaction.
+
+  The description stays out of the hash even where there is a running balance: the same transaction can read differently in CSV and in fetched data, so its ID would depend on which format it came in and could change when the other one arrives.
 - **Opening balances** are derived from the first running balance (or a snapshot) and booked at `books.start` (or the source's `start`) against `equity:opening-balances`. Moving `start` re-derives them.
 - **Freshness warnings:**
   - Fetched data older than 35 days, or exported data older than 90.
