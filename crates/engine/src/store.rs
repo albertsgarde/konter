@@ -30,8 +30,10 @@ impl TransactionId {
     /// A random (version 4) UUID from 16 random bytes. The engine has no
     /// source of randomness of its own, so the caller brings the bytes.
     pub fn from_random(mut bytes: [u8; 16]) -> TransactionId {
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        // The version, 4, is the high half of byte 6, and the variant the two
+        // high bits of byte 8.
+        bytes[6] = bytes[6] % 0x10 + 0x40;
+        bytes[8] = bytes[8] % 0x40 + 0x80;
         let mut text = String::with_capacity(36);
         for (i, byte) in bytes.iter().enumerate() {
             if [4, 6, 8, 10].contains(&i) {
@@ -335,6 +337,9 @@ impl Table {
                 if other == &row.id || !table.rows.contains_key(other) {
                     bail!("{} is said to be the same as {other}, which isn't another transaction", row.id);
                 }
+            }
+            if table.resolve(&row.id).is_none() {
+                bail!("{} is said to be the same as rows that lead back to it", row.id);
             }
         }
         Ok(table)
