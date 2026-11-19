@@ -111,6 +111,8 @@ Data quirks worth knowing:
 - From November 2025, Nordea card payments through Enable Banking have a bare reference number as description; the merchant is only in the counterparty name. Rules match both (`when.any = [{ description_re = … }, { counterparty_name_re = … }]`).
 - MobilePay transfers read `MobilePay <full name>`.
 
+A store of transactions (`store` in the engine) is being built to take the place of merging. In it a transaction gets a UUID when it's first read and keeps it. Reading a file fills in what a transaction the table already has lacks, or adds a row, marked when it may be one the table already has. Nothing builds from it yet: everything above still describes how the books are made.
+
 ## 5. Rules
 
 - **Pins** (`[pin."<id>"]`) map one transaction and always win. **Pattern rules** (`[[rule]]`) match on conditions:
