@@ -23,6 +23,7 @@ use konter_engine::money::{Amount, fmt_num, parse_danish, parse_plain};
 use konter_engine::pipeline::Build;
 use konter_engine::rules::Rules;
 use konter_engine::sources::{self, SourceData};
+use konter_engine::store::{Table, TransactionId};
 use konter_engine::tags;
 use konter_engine::transfers::{Leg, pair};
 use rust_decimal::Decimal;
@@ -213,9 +214,11 @@ fn history(rng: &mut Rng, days: i8) -> Vec<Row> {
 /// Exports that together cover `rows`, as row ranges in booking order. An
 /// export starts at the beginning of a day. With `mid_day` it may end
 /// anywhere (an export taken during the day has that day's rows so far),
-/// else at the end of a day.
-fn exports(rng: &mut Rng, rows: &[Row], mid_day: bool) -> Vec<Range<usize>> {
-    let day_starts: Vec<usize> = (0..rows.len()).filter(|&i| i == 0 || rows[i].0 != rows[i - 1].0).collect();
+/// else at the end of a day. With `any_start` it may also start anywhere,
+/// which no bank's file does.
+fn exports(rng: &mut Rng, rows: &[Row], mid_day: bool, any_start: bool) -> Vec<Range<usize>> {
+    let day_starts: Vec<usize> =
+        (0..rows.len()).filter(|&i| any_start || i == 0 || rows[i].0 != rows[i - 1].0).collect();
     let ends: Vec<usize> = if mid_day {
         (1..=rows.len()).collect()
     } else {
@@ -269,7 +272,7 @@ fn split_history(rng: &mut Rng, size: usize, mid_day: bool) -> Exports {
             break rows;
         }
     };
-    let parts = exports(rng, &rows, mid_day).into_iter().map(|range| export_csv(&rows[range])).collect();
+    let parts = exports(rng, &rows, mid_day, false).into_iter().map(|range| export_csv(&rows[range])).collect();
     Exports { whole: export_csv(&rows), parts }
 }
 
@@ -401,11 +404,16 @@ struct Arrivals {
 /// A history of up to `size` days, at most a week, in exports and fetches
 /// that each start at the beginning of a day and may end during one. Where a
 /// file sorts among the others has nothing to do with when it arrives.
-fn arrivals(rng: &mut Rng, size: usize, lunar: bool) -> Arrivals {
+///
+/// With `any_part` a file may start partway through a day too, and no two
+/// rows of the history are equal in everything: those nothing can tell apart
+/// once they're in different files.
+fn arrivals(rng: &mut Rng, size: usize, lunar: bool, any_part: bool) -> Arrivals {
     let days = i8::try_from(size.min(7)).expect("at most 7");
     let rows = loop {
         let rows = history(rng, days);
-        if !rows.is_empty() {
+        let twice = rows.iter().enumerate().any(|(i, row)| rows[..i].contains(row));
+        if !rows.is_empty() && !(any_part && twice) {
             break rows;
         }
     };
@@ -418,7 +426,7 @@ fn arrivals(rng: &mut Rng, size: usize, lunar: bool) -> Arrivals {
         };
         File { rel: format!("{folder}/{k:02}.{}", if fetch { "json" } else { "csv" }), text }
     };
-    let ranges = exports(rng, &rows, true);
+    let ranges = exports(rng, &rows, true, any_part);
     let mut names: Vec<usize> = (1..=ranges.len()).collect();
     rng.shuffle(&mut names);
     let parts = ranges.into_iter().zip(names).map(|(range, k)| file(k, range, rng.below(2) == 1)).collect();
@@ -474,12 +482,95 @@ fn check_arrivals(case: &Arrivals) -> Result<(), String> {
 
 #[test]
 fn a_nordea_id_is_the_same_whichever_files_have_arrived() {
-    check_cases("ids-nordea", 500, |rng, size| arrivals(rng, size, false), check_arrivals);
+    check_cases("ids-nordea", 500, |rng, size| arrivals(rng, size, false, false), check_arrivals);
 }
 
 #[test]
 fn a_lunar_id_is_the_same_whichever_files_have_arrived() {
-    check_cases("ids-lunar", 500, |rng, size| arrivals(rng, size, true), check_arrivals);
+    check_cases("ids-lunar", 500, |rng, size| arrivals(rng, size, true, false), check_arrivals);
+}
+
+/// What the store of transactions is for: as the files of a history are read
+/// into it one by one, exports and fetches in any order, an ID keeps meaning
+/// the transaction it was given to, and in the end the table has the
+/// transactions of the whole history, each once. Unless `may_be_unsure`,
+/// the reader is never unsure about a row either.
+fn check_store(case: &Arrivals, may_be_unsure: bool) -> Result<(), String> {
+    let (config, source) = if case.lunar {
+        (config(LUNAR), "lunar:b")
+    } else {
+        (config(&NORDEA.replace("[\"nordea-csv\"]", "[\"nordea-csv\", \"enable-banking\"]")), "bank:a")
+    };
+    let rows_of = |f: &File| sources::parse_raw(&config, source, &f.rel, &f.text, None).expect("the file parses").rows;
+    let mut minted = 0u128;
+    let mut mint = || {
+        minted += 1;
+        TransactionId::from_random(minted.to_be_bytes())
+    };
+    let mut table = Table::default();
+    let mut given: BTreeMap<TransactionId, String> = BTreeMap::new();
+    for (arrived, file) in case.parts.iter().enumerate() {
+        let reading = table.read(source, &rows_of(file), &mut mint);
+        if !(reading.unsure.is_empty() || may_be_unsure) || !reading.disagreements.is_empty() {
+            return Err(format!("reading {} (file {} to arrive): {reading:?}", file.rel, arrived + 1));
+        }
+        for t in table.transactions() {
+            let now = format!("{} {} {:?}", t.date, fmt_num(t.amount), t.text.as_deref().unwrap_or(""));
+            if let Some(was) = given.insert(t.id.clone(), now.clone())
+                && was != now
+            {
+                return Err(format!(
+                    "after {} (file {} to arrive), {} is {now}; it was {was}",
+                    file.rel,
+                    arrived + 1,
+                    t.id
+                ));
+            }
+        }
+        if table.transactions().count() != given.len() {
+            return Err(format!("after {} (file {} to arrive), a transaction is gone", file.rel, arrived + 1));
+        }
+    }
+    let mut want: Vec<String> = rows_of(&case.whole)
+        .iter()
+        .map(|t| format!("{} {} {:?}", t.booked, fmt_num(t.amount), t.description))
+        .collect();
+    want.sort_unstable();
+    let mut got: Vec<String> = given.into_values().collect();
+    got.sort_unstable();
+    if want != got {
+        return Err(format!("the table has:\n  {}\nthe whole history:\n  {}", got.join("\n  "), want.join("\n  ")));
+    }
+    Ok(())
+}
+
+#[test]
+fn the_store_keeps_every_id_as_a_nordea_accounts_files_arrive() {
+    check_cases("store-nordea", 500, |rng, size| arrivals(rng, size, false, false), |case| check_store(case, false));
+}
+
+#[test]
+fn the_store_keeps_every_id_as_a_lunar_accounts_files_arrive() {
+    check_cases("store-lunar", 500, |rng, size| arrivals(rng, size, true, false), |case| check_store(case, false));
+}
+
+/// The case counting can't handle: a file that has a transaction without the
+/// ones before it that day, so that one that looks the same turns up earlier
+/// later on. The store may say it isn't sure, but each transaction still gets
+/// one ID and keeps it.
+#[test]
+fn the_store_keeps_every_id_when_nordea_files_start_anywhere() {
+    check_cases(
+        "store-nordea-parts",
+        500,
+        |rng, size| arrivals(rng, size, false, true),
+        |case| check_store(case, true),
+    );
+}
+
+#[test]
+fn the_store_keeps_every_id_when_lunar_files_start_anywhere() {
+    check_cases("store-lunar-parts", 500, |rng, size| arrivals(rng, size, true, true), |case| check_store(case, true));
 }
 
 // ── Order-independent rules (docs/spec.md §1) ──────────────────────────
@@ -1039,7 +1130,7 @@ fn world(rng: &mut Rng, size: usize, wild: bool) -> World {
         ends.push(((*source).to_string(), last.3.to_string()));
         // Half of them taken during the day, as exports usually are.
         let mid_day = rng.below(2) == 0;
-        for (k, range) in exports(rng, &rows, mid_day).into_iter().enumerate() {
+        for (k, range) in exports(rng, &rows, mid_day, false).into_iter().enumerate() {
             let rel = nordea_rel_of(number, &format!("2026-02-{:02} 10.00.00", k + 1));
             files.push(((*source).to_string(), rel, export_csv(&rows[range])));
         }
