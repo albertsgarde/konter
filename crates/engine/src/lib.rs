@@ -15,6 +15,7 @@ pub mod money;
 pub mod pipeline;
 pub mod rules;
 pub mod sources;
+pub mod store;
 pub mod subscriptions;
 pub mod tags;
 pub mod transfers;
