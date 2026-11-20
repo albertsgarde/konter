@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 
 use common::{NORDEA, config, nordea_csv, nordea_rel};
 use konter_engine::config::Config;
-use konter_engine::model::BankTransaction;
+use konter_engine::model::{BankTransaction, Origin};
 use konter_engine::sources;
-use konter_engine::store::{Reading, Table, TransactionId};
+use konter_engine::store::{Conflict, Reading, Table, TransactionId};
 use rust_decimal::Decimal;
 
 const LUNAR: &str = "[books]\nstart = 2026-01-01\n\n[sources.\"lunar:b\"]\nbank = \"lunar\"\nnumber = \"555\"\n\
@@ -63,16 +63,12 @@ fn a_transaction_that_turns_up_earlier_in_the_day_gets_an_id_of_its_own() {
     let config = config(NORDEA);
     let (mut table, mut mint) = (Table::default(), ids());
     let morning = nordea_csv(&[DAY[1], DAY[4]]);
-    let first = table
-        .read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-12 10.00.00"), &morning), &mut mint)
-        .expect("the file is read");
+    let first = table.read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-12 10.00.00"), &morning), &mut mint);
     assert_eq!((first.matched, first.added.len()), (0, 2));
     let before = by_text(&table);
 
     let later = nordea_csv(&DAY);
-    let second = table
-        .read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-15 10.00.00"), &later), &mut mint)
-        .expect("the file is read");
+    let second = table.read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-15 10.00.00"), &later), &mut mint);
     assert_eq!((second.matched, second.added.len()), (2, 3), "{second:?}");
     assert!(second.unsure.is_empty(), "{second:?}");
     let after = by_text(&table);
@@ -92,14 +88,12 @@ fn a_fetched_transaction_keeps_its_id_and_gains_what_an_export_adds() {
     let config = config(LUNAR);
     let (mut table, mut mint) = (Table::default(), ids());
     let fetch = fetched("r1", "2026-01-05", "50.00", "DKK", "Groceries");
-    table.read("lunar:b", &rows(&config, "lunar:b", "lunar/555/eb.json", &fetch), &mut mint).expect("the file is read");
+    table.read("lunar:b", &rows(&config, "lunar:b", "lunar/555/eb.json", &fetch), &mut mint);
     let id = table.transactions().next().expect("one transaction").id.clone();
     assert_eq!(table.get(&id).and_then(|t| t.balance), None);
 
     let export = format!("{LUNAR_HEADER}05.01.2026,09.00,Groceries,\"-50,00\",\"100,00\",r1\n");
-    let reading = table
-        .read("lunar:b", &rows(&config, "lunar:b", "lunar/555/statement.csv", &export), &mut mint)
-        .expect("the file is read");
+    let reading = table.read("lunar:b", &rows(&config, "lunar:b", "lunar/555/statement.csv", &export), &mut mint);
     assert_eq!(reading, Reading { matched: 1, ..Reading::default() });
     assert_eq!(table.len(), 1);
     let stored = table.get(&id).expect("the same ID");
@@ -122,13 +116,9 @@ fn rows_equal_in_everything_are_matched_one_for_one() {
     let coffee = ("2026/01/05", "-20,00", "Coffee", "100,00");
     let refund = ("2026/01/05", "20,00", "Refund", "120,00");
     let one = nordea_csv(&[coffee]);
-    table
-        .read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-05 10.00.00"), &one), &mut mint)
-        .expect("the file is read");
+    table.read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-05 10.00.00"), &one), &mut mint);
     let two = nordea_csv(&[coffee, refund, coffee]);
-    let reading = table
-        .read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-06 10.00.00"), &two), &mut mint)
-        .expect("the file is read");
+    let reading = table.read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-06 10.00.00"), &two), &mut mint);
     assert_eq!((reading.matched, reading.added.len()), (1, 2), "{reading:?}");
     assert!(reading.unsure.is_empty(), "{reading:?}");
     assert_eq!(table.transactions().filter(|t| t.text.as_deref() == Some("Coffee")).count(), 2);
@@ -140,9 +130,9 @@ fn reading_a_file_again_changes_nothing() {
     let config = config(NORDEA);
     let (mut table, mut mint) = (Table::default(), ids());
     let rows = rows(&config, "bank:a", &nordea_rel("2026-01-15 10.00.00"), &nordea_csv(&DAY));
-    table.read("bank:a", &rows, &mut mint).expect("the file is read");
+    table.read("bank:a", &rows, &mut mint);
     let once = table.clone();
-    let again = table.read("bank:a", &rows, &mut mint).expect("the file is read");
+    let again = table.read("bank:a", &rows, &mut mint);
     assert_eq!(again, Reading { matched: 5, ..Reading::default() });
     assert_eq!(table, once);
 }
@@ -158,18 +148,14 @@ fn a_copy_we_arent_sure_of_is_added_and_marked_and_can_be_joined() {
     let config = config(&both);
     let (mut table, mut mint) = (Table::default(), ids());
     let export = nordea_csv(&[("2026/01/05", "-50,00", "Groceries", "100,00")]);
-    table
-        .read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-06 10.00.00"), &export), &mut mint)
-        .expect("the file is read");
+    table.read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-06 10.00.00"), &export), &mut mint);
     let had = table.transactions().next().expect("one transaction").id.clone();
 
     let fetch = r#"{"acct_fetch": 1, "fetched_at": "2026-01-16T09:00:00Z", "pages": [{"transactions": [
       {"entry_reference": "r1", "booking_date": "2026-01-05", "status": "BOOK", "credit_debit_indicator": "DBIT",
        "transaction_amount": {"currency": "DKK", "amount": "50.00"}, "remittance_information": ["GROCERIES APS"],
        "balance_after_transaction": {"currency": "DKK", "amount": "100.00"}}]}]}"#;
-    let reading = table
-        .read("bank:a", &rows(&config, "bank:a", "nordea/1234567890/eb.json", fetch), &mut mint)
-        .expect("the file is read");
+    let reading = table.read("bank:a", &rows(&config, "bank:a", "nordea/1234567890/eb.json", fetch), &mut mint);
     assert_eq!(reading.matched, 0);
     let [(new, other)] = reading.unsure.as_slice() else { panic!("{reading:?}") };
     assert_eq!(other, &had);
@@ -186,47 +172,123 @@ fn a_copy_we_arent_sure_of_is_added_and_marked_and_can_be_joined() {
     assert_eq!(table.get(new).and_then(|t| t.same_as.clone()), Some(had.clone()));
     assert_eq!(table.get(new).and_then(|t| t.maybe_same_as.clone()), None);
     // The fetch read again is the transaction it was joined to.
-    let again = table
-        .read("bank:a", &rows(&config, "bank:a", "nordea/1234567890/eb.json", fetch), &mut mint)
-        .expect("the file is read");
+    let again = table.read("bank:a", &rows(&config, "bank:a", "nordea/1234567890/eb.json", fetch), &mut mint);
     assert_eq!(again, Reading { matched: 1, ..Reading::default() });
 
     // Two transactions of different amounts can't be joined.
     let coffee = nordea_csv(&[("2026/01/06", "-20,00", "Coffee", "80,00")]);
-    let reading = table
-        .read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-07 10.00.00"), &coffee), &mut mint)
-        .expect("the file is read");
+    let reading =
+        table.read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-07 10.00.00"), &coffee), &mut mint);
     let refused = table.join(&reading.added[0], &had).expect_err("two transactions");
     let both = "can't be one transaction: bank:a 2026-01-05 -50 \"Groceries\" / bank:a 2026-01-06 -20 \"Coffee\"";
     assert!(refused.to_string().contains(both), "{refused}");
 }
 
-/// What the table has is never overwritten. A copy that says something else
-/// about a field both have fails the read, naming each such field, and the
-/// table is left as it was: nothing of the file is taken in.
+/// What the table has is never overwritten, and a file is always read. A
+/// copy with a transaction's reference that says something else about a field
+/// both have is that transaction: it keeps what it had, gains what it lacked,
+/// and notes where the copy is and which columns differ. The rest of the file
+/// is taken in as ever.
 #[test]
-fn a_copy_that_says_something_else_fails_the_read() {
+fn a_copy_that_says_something_else_is_noted_on_its_transaction() {
     let config = config(LUNAR);
     let (mut table, mut mint) = (Table::default(), ids());
     let fetch = fetched("r1", "2026-01-05", "50.00", "EUR", "GROCERIES APS");
-    table.read("lunar:b", &rows(&config, "lunar:b", "lunar/555/eb.json", &fetch), &mut mint).expect("the file is read");
-    let before = table.clone();
+    table.read("lunar:b", &rows(&config, "lunar:b", "lunar/555/eb.json", &fetch), &mut mint);
     // The same reference, day and amount, in other words and another
-    // currency, and a second row that would have been new.
+    // currency, and a second row that is new.
     let export = format!(
         "{LUNAR_HEADER}06.01.2026,09.00,Coffee,\"-20,00\",\"80,00\",r2\n\
          05.01.2026,09.00,Groceries,\"-50,00\",\"100,00\",r1\n"
     );
-    let failed = table
-        .read("lunar:b", &rows(&config, "lunar:b", "lunar/555/statement.csv", &export), &mut mint)
-        .expect_err("the copies disagree");
+    let export = rows(&config, "lunar:b", "lunar/555/statement.csv", &export);
+    let reading = table.read("lunar:b", &export, &mut mint);
+    assert_eq!((reading.matched, reading.added.as_slice(), reading.unsure.len()), (1, [id(2)].as_slice(), 0));
     assert_eq!(
-        failed.to_string(),
-        "2 copies say something else than the table, which was left as it was:\n  \
-         lunar:b 2026-01-05 -50 \"GROCERIES APS\": the currency is \"EUR\" in the table and \"DKK\" in lunar/555/statement.csv\n  \
-         lunar:b 2026-01-05 -50 \"GROCERIES APS\": the text is \"GROCERIES APS\" in the table and \"Groceries\" in lunar/555/statement.csv"
+        reading.conflicts,
+        [
+            "lunar:b 2026-01-05 -50 \"GROCERIES APS\": currency is \"EUR\" in the table and \"DKK\" in lunar/555/statement.csv:3",
+            "lunar:b 2026-01-05 -50 \"GROCERIES APS\": text is \"GROCERIES APS\" in the table and \"Groceries\" in lunar/555/statement.csv:3",
+        ]
     );
-    assert_eq!(table, before);
+    let groceries = table.get(&id(1)).expect("the fetched transaction");
+    assert_eq!((groceries.currency.as_deref(), groceries.text.as_deref()), (Some("EUR"), Some("GROCERIES APS")));
+    assert_eq!(groceries.balance, Some(Decimal::from(100)));
+    let noted = Conflict {
+        place: Origin { file: "lunar/555/statement.csv".to_owned(), line: 3 },
+        columns: vec!["currency".to_owned(), "text".to_owned()],
+    };
+    assert_eq!(groceries.conflicts, [noted]);
+    assert_eq!(groceries.sources.len(), 2);
+    assert!(table.get(&id(2)).expect("the coffee").conflicts.is_empty());
+
+    // The table's text has it, between `maybe_same_as` and `sources`.
+    let text = table.write().expect("it can be written");
+    assert!(text.contains(",,lunar/555/statement.csv:3=currency+text,lunar/555/eb.json:1|"), "{text}");
+    assert_eq!(Table::parse(&text).expect("it reads back"), table);
+    // Reading the file again notes nothing more: its rows are the ones they became.
+    let noted = table.clone();
+    assert_eq!(table.read("lunar:b", &export, &mut mint), Reading { matched: 2, ..Reading::default() });
+    assert_eq!(table, noted);
+    assert_eq!(table.files().into_iter().collect::<Vec<_>>(), ["lunar/555/eb.json", "lunar/555/statement.csv"]);
+
+    let refused = |cell: &str| {
+        let text = text.replacen("lunar/555/statement.csv:3=currency+text", cell, 1);
+        format!("{:#}", Table::parse(&text).expect_err("it isn't a table"))
+    };
+    assert!(refused("lunar/555/statement.csv:3").contains("isn't file:line=columns"));
+    assert!(refused("lunar/555/statement.csv=text").contains("isn't file:line"));
+    assert!(refused("lunar/555/statement.csv:3=text+colour").contains("names \"colour\", which isn't a column"));
+}
+
+/// Without a reference to go by, a row is a transaction of the table only if
+/// nothing both have says otherwise. A row that reads the same and differs in
+/// anything else is added and marked: it may be another transaction.
+#[test]
+fn a_row_that_reads_the_same_and_differs_elsewhere_isnt_taken_for_the_transaction() {
+    let config = config(NORDEA);
+    let export = nordea_csv(&[("2026/01/05", "-50,00", "Groceries", "100,00")]);
+    let mut had = rows(&config, "bank:a", &nordea_rel("2026-01-06 10.00.00"), &export).remove(0);
+    had.time = Some(jiff::civil::time(9, 0, 0, 0));
+    had.value_date = Some(had.booked);
+    had.transaction_date = Some(had.booked);
+    had.original_amount = Some(Decimal::from(-7));
+    had.original_currency = Some("EUR".to_owned());
+    had.counterparty = Some("DK001".to_owned());
+    had.counterparty_name = Some("The shop".to_owned());
+    let (mut table, mut mint) = (Table::default(), ids());
+    table.read("bank:a", std::slice::from_ref(&had), &mut mint);
+
+    let mut copy = had.clone();
+    copy.origins = vec![Origin { file: "nordea/1234567890/other.csv".to_owned(), line: 2 }];
+    type Change = fn(&mut BankTransaction);
+    let changes: [(&str, Change); 8] = [
+        ("currency", |t| t.currency = "SEK".to_owned()),
+        ("counterparty_name", |t| t.counterparty_name = Some("Another shop".to_owned())),
+        ("counterparty", |t| t.counterparty = Some("DK002".to_owned())),
+        ("time", |t| t.time = Some(jiff::civil::time(14, 0, 0, 0))),
+        ("value_date", |t| t.value_date = t.value_date.and_then(|d| d.tomorrow().ok())),
+        ("transaction_date", |t| t.transaction_date = t.transaction_date.and_then(|d| d.tomorrow().ok())),
+        ("original_amount", |t| t.original_amount = Some(Decimal::from(-8))),
+        ("original_currency", |t| t.original_currency = Some("USD".to_owned())),
+    ];
+    for (column, change) in changes {
+        let (mut table, mut other) = (table.clone(), copy.clone());
+        change(&mut other);
+        let reading = table.read("bank:a", &[other], &mut mint);
+        assert_eq!(reading.matched, 0, "{column}");
+        assert_eq!(reading.unsure, [(reading.added[0].clone(), id(1))], "{column}");
+        assert!(reading.conflicts.is_empty(), "{column}");
+        assert!(table.get(&id(1)).expect("the one we had").conflicts.is_empty(), "{column}");
+    }
+    // The copy as it was, and one that says less, are the transaction.
+    let mut less = copy.clone();
+    (less.time, less.value_date, less.counterparty) = (None, None, None);
+    for same in [copy, less] {
+        let mut table = table.clone();
+        assert_eq!(table.read("bank:a", &[same], &mut mint), Reading { matched: 1, ..Reading::default() });
+        assert_eq!(table.len(), 1);
+    }
 }
 
 /// The table is text: a heading, then one line per transaction, sorted by
@@ -240,15 +302,13 @@ fn the_table_reads_back_as_it_was_written() {
         ("2026/01/06", "-20,00", "Café \"Den Gamle\", Aarhus", "80,00"),
         ("2026/01/05", "-50,00", "Groceries", "100,00"),
     ]);
-    table
-        .read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-07 10.00.00"), &export), &mut mint)
-        .expect("the file is read");
+    table.read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-07 10.00.00"), &export), &mut mint);
     let text = table.write().expect("it can be written");
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
         lines[0],
         "id,account,date,amount,currency,text,counterparty_name,counterparty,balance,reference,time,value_date,\
-         transaction_date,original_amount,original_currency,same_as,maybe_same_as,sources"
+         transaction_date,original_amount,original_currency,same_as,maybe_same_as,conflicts,sources"
     );
     assert!(
         lines[1].starts_with("01010101-0101-4101-8101-010101010101,bank:a,2026-01-05,-50,DKK,Groceries,,,100,"),
@@ -266,9 +326,7 @@ fn the_table_reads_back_as_it_was_written() {
 fn a_table_that_isnt_one_is_refused() {
     let config = config(NORDEA);
     let (mut table, mut mint) = (Table::default(), ids());
-    table
-        .read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-15 10.00.00"), &nordea_csv(&DAY)), &mut mint)
-        .expect("the file is read");
+    table.read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-15 10.00.00"), &nordea_csv(&DAY)), &mut mint);
     let text = table.write().expect("it can be written");
     let refused = |text: &str| format!("{:#}", Table::parse(text).expect_err("it isn't a table"));
 
@@ -293,12 +351,12 @@ fn a_table_that_isnt_one_is_refused() {
     assert_eq!(TransactionId::parse("01010101-0101-4101-8101-010101010101").expect("an ID").as_str(), id(1).as_str());
     // Whatever the 16 bytes, the ID says it's a random UUID.
     assert_eq!(TransactionId::from_random([0xff; 16]).as_str(), "ffffffff-ffff-4fff-bfff-ffffffffffff");
-    let pointing_nowhere = text.replacen(",,nordea/", ",09090909-0909-4909-8909-090909090909,nordea/", 1);
+    let pointing_nowhere = text.replacen(",,,nordea/", ",09090909-0909-4909-8909-090909090909,,nordea/", 1);
     assert!(refused(&pointing_nowhere).contains("which isn't another transaction"), "{}", refused(&pointing_nowhere));
 }
 
 const HEADING: &str = "id,account,date,amount,currency,text,counterparty_name,counterparty,balance,reference,time,\
-                       value_date,transaction_date,original_amount,original_currency,same_as,maybe_same_as,sources";
+                       value_date,transaction_date,original_amount,original_currency,same_as,maybe_same_as,conflicts,sources";
 
 fn id(n: u8) -> TransactionId {
     TransactionId::from_random([n; 16])
@@ -425,14 +483,10 @@ fn a_reference_that_two_transactions_have_settles_nothing() {
     let (mut table, mut mint) = (Table::default(), ids());
     let twice =
         fetch_of(&[("r1", "2026-01-05", "50.00", "Groceries", None), ("r1", "2026-01-05", "50.00", "Groceries", None)]);
-    let first = table
-        .read("lunar:b", &rows(&config, "lunar:b", "lunar/555/eb-1.json", &twice), &mut mint)
-        .expect("the file is read");
+    let first = table.read("lunar:b", &rows(&config, "lunar:b", "lunar/555/eb-1.json", &twice), &mut mint);
     assert_eq!((first.matched, first.added.len(), first.unsure.len()), (0, 2, 0), "{first:?}");
     let once = fetch_of(&[("r1", "2026-01-05", "50.00", "Groceries", None)]);
-    let second = table
-        .read("lunar:b", &rows(&config, "lunar:b", "lunar/555/eb-2.json", &once), &mut mint)
-        .expect("the file is read");
+    let second = table.read("lunar:b", &rows(&config, "lunar:b", "lunar/555/eb-2.json", &once), &mut mint);
     assert_eq!((second.matched, second.added.len(), second.unsure.len()), (0, 1, 1), "{second:?}");
     assert_eq!(table.len(), 3);
 }
@@ -447,13 +501,9 @@ fn a_row_we_arent_sure_of_points_at_the_likeliest_transaction() {
     let (mut table, mut mint) = (Table::default(), ids());
     // An export's row first, then a fetched one that the bank later moves a day.
     let export = nordea_csv(&[("2026/01/06", "-55,00", "Shop", "45,00")]);
-    table
-        .read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-07 10.00.00"), &export), &mut mint)
-        .expect("the file is read");
+    table.read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-07 10.00.00"), &export), &mut mint);
     let fetch = fetch_of(&[("r1", "2026-01-05", "50.00", "Groceries", Some("100.00"))]);
-    table
-        .read("bank:a", &rows(&config, "bank:a", "nordea/1234567890/eb-1.json", &fetch), &mut mint)
-        .expect("the file is read");
+    table.read("bank:a", &rows(&config, "bank:a", "nordea/1234567890/eb-1.json", &fetch), &mut mint);
     let (shop, groceries) = (id(1), id(2));
     assert_eq!(table.get(&groceries).and_then(|t| t.reference.as_deref()), Some("r1"));
 
@@ -463,25 +513,19 @@ fn a_row_we_arent_sure_of_points_at_the_likeliest_transaction() {
         ("r1", "2026-01-06", "55.00", "Other", Some("45.00")),
         ("r9", "2026-01-06", "55.00", "Another", Some("45.00")),
     ]);
-    let reading = table
-        .read("bank:a", &rows(&config, "bank:a", "nordea/1234567890/eb-2.json", &moved), &mut mint)
-        .expect("the file is read");
+    let reading = table.read("bank:a", &rows(&config, "bank:a", "nordea/1234567890/eb-2.json", &moved), &mut mint);
     assert_eq!(reading.matched, 0, "{reading:?}");
     assert_eq!(reading.unsure, [(id(3), groceries), (id(4), shop)], "{reading:?}");
 
     // Two rows of one file that both look like the shop: only one of them
     // can be it.
     let (mut table, mut mint) = (Table::default(), ids());
-    table
-        .read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-07 10.00.00"), &export), &mut mint)
-        .expect("the file is read");
+    table.read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-07 10.00.00"), &export), &mut mint);
     let two = fetch_of(&[
         ("r9", "2026-01-06", "55.00", "Another", Some("45.00")),
         ("r8", "2026-01-06", "55.00", "A third", Some("45.00")),
     ]);
-    let reading = table
-        .read("bank:a", &rows(&config, "bank:a", "nordea/1234567890/eb-3.json", &two), &mut mint)
-        .expect("the file is read");
+    let reading = table.read("bank:a", &rows(&config, "bank:a", "nordea/1234567890/eb-3.json", &two), &mut mint);
     assert_eq!((reading.matched, reading.added.len()), (0, 2), "{reading:?}");
     assert_eq!(reading.unsure, [(id(2), id(1))], "{reading:?}");
 }
@@ -493,9 +537,11 @@ fn an_id_that_is_taken_isnt_given_again() {
     let mut table = Table::default();
     let mut given = [1, 1, 1, 2].into_iter();
     let mut mint = || id(given.next().expect("enough IDs"));
-    let reading = table
-        .read("bank:a", &rows(&config, "bank:a", &nordea_rel("2026-01-15 10.00.00"), &nordea_csv(&DAY[3..])), &mut mint)
-        .expect("the file is read");
+    let reading = table.read(
+        "bank:a",
+        &rows(&config, "bank:a", &nordea_rel("2026-01-15 10.00.00"), &nordea_csv(&DAY[3..])),
+        &mut mint,
+    );
     assert_eq!(reading.added, [id(1), id(2)]);
     assert_eq!(table.len(), 2);
 }

@@ -493,8 +493,9 @@ fn a_lunar_id_is_the_same_whichever_files_have_arrived() {
 /// What the store of transactions is for: as the files of a history are read
 /// into it one by one, exports and fetches in any order, an ID keeps meaning
 /// the transaction it was given to, and in the end the table has the
-/// transactions of the whole history, each once. Unless `may_be_unsure`,
-/// the reader is never unsure about a row either.
+/// transactions of the whole history, each once. No copy says something
+/// else than the table, and unless `may_be_unsure`, the reader is never
+/// unsure about a row either.
 fn check_store(case: &Arrivals, may_be_unsure: bool) -> Result<(), String> {
     let (config, source) = if case.lunar {
         (config(LUNAR), "lunar:b")
@@ -510,9 +511,8 @@ fn check_store(case: &Arrivals, may_be_unsure: bool) -> Result<(), String> {
     let mut table = Table::default();
     let mut given: BTreeMap<TransactionId, String> = BTreeMap::new();
     for (arrived, file) in case.parts.iter().enumerate() {
-        let reading =
-            table.read(source, &rows_of(file), &mut mint).map_err(|e| format!("reading {}: {e:#}", file.rel))?;
-        if !(reading.unsure.is_empty() || may_be_unsure) {
+        let reading = table.read(source, &rows_of(file), &mut mint);
+        if !(reading.conflicts.is_empty() && (reading.unsure.is_empty() || may_be_unsure)) {
             return Err(format!("reading {} (file {} to arrive): {reading:?}", file.rel, arrived + 1));
         }
         for t in table.transactions() {

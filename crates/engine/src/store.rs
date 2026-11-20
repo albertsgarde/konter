@@ -7,8 +7,10 @@
 //! ID once, when it's first read, and keeps it. Reading a file reconciles its
 //! rows with the table ([`Table::read`]): a row that is a transaction the
 //! table has fills in what that one lacks, and any other row is added. What
-//! the table has is never overwritten: a copy that says something else fails
-//! the read.
+//! the table has is never overwritten, and reading never fails: a row that
+//! may be a transaction the table has is added and marked (`maybe_same_as`),
+//! and a copy that says something else than its transaction is noted on it
+//! (`conflicts`), both for a person to settle.
 //!
 //! Nothing builds from the table yet: the books still come from merging the
 //! raw files (`sources::merge`).
@@ -99,12 +101,24 @@ pub struct Stored {
     /// Set when the row was added without knowing whether it's a transaction
     /// the table already had: that one's ID, for a person to settle.
     pub maybe_same_as: Option<TransactionId>,
+    /// The copies of it that say something else than this row about a field
+    /// both have, for a person to settle. The row keeps what it had.
+    pub conflicts: Vec<Conflict>,
     /// Every place in the raw files it was read from.
     pub sources: Vec<Origin>,
 }
 
+/// A copy of a transaction that says something else than its row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Conflict {
+    /// Where the copy is in the raw files.
+    pub place: Origin,
+    /// The columns it differs in.
+    pub columns: Vec<String>,
+}
+
 /// The table's columns, in order. The ones that are awkward to read come last.
-const COLUMNS: [&str; 18] = [
+const COLUMNS: [&str; 19] = [
     "id",
     "account",
     "date",
@@ -122,11 +136,17 @@ const COLUMNS: [&str; 18] = [
     "original_currency",
     "same_as",
     "maybe_same_as",
+    "conflicts",
     "sources",
 ];
 
-/// Between the places in `sources`: no path under `data/` has one.
-const BETWEEN_SOURCES: char = '|';
+/// Between the places in `sources` and the copies in `conflicts`: no path
+/// under `data/` has one.
+const BETWEEN_PLACES: char = '|';
+
+/// Between a copy's place and its columns in `conflicts`, and between the columns.
+const BEFORE_COLUMNS: char = '=';
+const BETWEEN_COLUMNS: char = '+';
 
 fn text_of(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
@@ -144,14 +164,34 @@ fn time_of(value: &str) -> Result<Time> {
     value.parse().with_context(|| format!("{value:?} isn't a time of day"))
 }
 
+fn place_of(place: &str) -> Result<Origin> {
+    let (file, line) = place.rsplit_once(':').with_context(|| format!("{place:?} isn't file:line"))?;
+    let line = line.parse().with_context(|| format!("{place:?} isn't file:line"))?;
+    Ok(Origin { file: file.to_owned(), line })
+}
+
+fn place(origin: &Origin) -> String {
+    format!("{}:{}", origin.file, origin.line)
+}
+
 fn sources_of(value: &str) -> Result<Vec<Origin>> {
+    value.split(BETWEEN_PLACES).filter(|place| !place.is_empty()).map(place_of).collect()
+}
+
+/// A `conflicts` cell: `file:line=column+column` for each copy.
+fn conflicts_of(value: &str) -> Result<Vec<Conflict>> {
     value
-        .split(BETWEEN_SOURCES)
-        .filter(|place| !place.is_empty())
-        .map(|place| {
-            let (file, line) = place.rsplit_once(':').with_context(|| format!("{place:?} isn't file:line"))?;
-            let line = line.parse().with_context(|| format!("{place:?} isn't file:line"))?;
-            Ok(Origin { file: file.to_owned(), line })
+        .split(BETWEEN_PLACES)
+        .filter(|conflict| !conflict.is_empty())
+        .map(|conflict| {
+            let (place, columns) = conflict
+                .rsplit_once(BEFORE_COLUMNS)
+                .with_context(|| format!("{conflict:?} isn't file:line{BEFORE_COLUMNS}columns"))?;
+            let columns: Vec<String> = columns.split(BETWEEN_COLUMNS).map(str::to_owned).collect();
+            if let Some(unknown) = columns.iter().find(|column| !COLUMNS.contains(&column.as_str())) {
+                bail!("{conflict:?} names {unknown:?}, which isn't a column");
+            }
+            Ok(Conflict { place: place_of(place)?, columns })
         })
         .collect()
 }
@@ -181,11 +221,12 @@ impl Stored {
             original_currency: row.original_currency.clone(),
             same_as: None,
             maybe_same_as: None,
+            conflicts: Vec::new(),
             sources: row.origins.clone(),
         }
     }
 
-    fn from_cells(cells: &[&str; 18]) -> Result<Stored> {
+    fn from_cells(cells: &[&str; 19]) -> Result<Stored> {
         let [
             id,
             account,
@@ -204,6 +245,7 @@ impl Stored {
             original_currency,
             same_as,
             maybe_same_as,
+            conflicts,
             sources,
         ] = *cells;
         if account.is_empty() {
@@ -227,12 +269,18 @@ impl Stored {
             original_currency: text_of(original_currency),
             same_as: parsed(same_as, TransactionId::parse)?,
             maybe_same_as: parsed(maybe_same_as, TransactionId::parse)?,
+            conflicts: conflicts_of(conflicts)?,
             sources: sources_of(sources)?,
         })
     }
 
-    fn cells(&self) -> [String; 18] {
-        let places: Vec<String> = self.sources.iter().map(|o| format!("{}:{}", o.file, o.line)).collect();
+    fn cells(&self) -> [String; 19] {
+        let places: Vec<String> = self.sources.iter().map(place).collect();
+        let conflicts: Vec<String> = self
+            .conflicts
+            .iter()
+            .map(|c| format!("{}{BEFORE_COLUMNS}{}", place(&c.place), c.columns.join(&BETWEEN_COLUMNS.to_string())))
+            .collect();
         [
             self.id.to_string(),
             self.account.clone(),
@@ -251,11 +299,13 @@ impl Stored {
             self.original_currency.clone().unwrap_or_default(),
             written(self.same_as.as_ref(), TransactionId::to_string),
             written(self.maybe_same_as.as_ref(), TransactionId::to_string),
-            places.join(&BETWEEN_SOURCES.to_string()),
+            conflicts.join(&BETWEEN_PLACES.to_string()),
+            places.join(&BETWEEN_PLACES.to_string()),
         ]
     }
 
-    fn short(&self) -> String {
+    /// The transaction in a few words, for messages.
+    pub fn short(&self) -> String {
         format!("{} {} {} {:?}", self.account, self.date, canonical(self.amount), self.text.as_deref().unwrap_or(""))
     }
 
@@ -270,6 +320,44 @@ impl Stored {
 
     fn has_reference_of(&self, row: &BankTransaction) -> bool {
         self.reference.is_some() && self.reference == row.bank_ref
+    }
+
+    /// This transaction as `row`, a copy of it, has it.
+    fn read_as(&self, row: &BankTransaction) -> Stored {
+        Stored::new(self.id.clone(), &self.account, row)
+    }
+
+    /// The columns in which `copy` says something else than this row about
+    /// a field both have, each with what the two say.
+    fn differences(&self, copy: &Stored) -> Vec<(&'static str, String)> {
+        let mut found = Vec::new();
+        differ("currency", self.currency.as_ref(), copy.currency.as_ref(), &mut found);
+        differ("text", self.text.as_ref(), copy.text.as_ref(), &mut found);
+        differ("counterparty_name", self.counterparty_name.as_ref(), copy.counterparty_name.as_ref(), &mut found);
+        differ("counterparty", self.counterparty.as_ref(), copy.counterparty.as_ref(), &mut found);
+        differ("balance", self.balance.as_ref(), copy.balance.as_ref(), &mut found);
+        differ("reference", self.reference.as_ref(), copy.reference.as_ref(), &mut found);
+        differ("time", self.time.as_ref(), copy.time.as_ref(), &mut found);
+        differ("value_date", self.value_date.as_ref(), copy.value_date.as_ref(), &mut found);
+        differ("transaction_date", self.transaction_date.as_ref(), copy.transaction_date.as_ref(), &mut found);
+        differ("original_amount", self.original_amount.as_ref(), copy.original_amount.as_ref(), &mut found);
+        differ("original_currency", self.original_currency.as_ref(), copy.original_currency.as_ref(), &mut found);
+        found
+    }
+
+    /// Takes over what `copy` has and this row lacks. What this row has stays.
+    fn absorb(&mut self, copy: &Stored) {
+        fill(&mut self.currency, copy.currency.as_ref());
+        fill(&mut self.text, copy.text.as_ref());
+        fill(&mut self.counterparty_name, copy.counterparty_name.as_ref());
+        fill(&mut self.counterparty, copy.counterparty.as_ref());
+        fill(&mut self.balance, copy.balance.as_ref());
+        fill(&mut self.reference, copy.reference.as_ref());
+        fill(&mut self.time, copy.time.as_ref());
+        fill(&mut self.value_date, copy.value_date.as_ref());
+        fill(&mut self.transaction_date, copy.transaction_date.as_ref());
+        fill(&mut self.original_amount, copy.original_amount.as_ref());
+        fill(&mut self.original_currency, copy.original_currency.as_ref());
     }
 }
 
@@ -289,20 +377,18 @@ fn fill<T: Clone>(slot: &mut Option<T>, value: Option<&T>) {
     }
 }
 
-/// Fills `slot` from a copy's `value` if it's empty. A value that is there
-/// stays, and a copy that says something else is noted in `said`.
-fn settle<T: Clone + PartialEq + fmt::Debug>(
-    field: &str,
-    slot: &mut Option<T>,
-    value: Option<&T>,
-    said: &mut Vec<String>,
+/// Notes in `found` that a copy says something else about `column` than the
+/// table has, if both say something.
+fn differ<T: PartialEq + fmt::Debug>(
+    column: &'static str,
+    has: Option<&T>,
+    says: Option<&T>,
+    found: &mut Vec<(&'static str, String)>,
 ) {
-    match (slot.as_ref(), value) {
-        (Some(has), Some(value)) if has != value => {
-            said.push(format!("{field} is {has:?} in the table and {value:?}"));
-        }
-        (None, Some(value)) => *slot = Some(value.clone()),
-        _ => {}
+    if let (Some(has), Some(says)) = (has, says)
+        && has != says
+    {
+        found.push((column, format!("{column} is {has:?} in the table and {says:?}")));
     }
 }
 
@@ -316,6 +402,9 @@ pub struct Reading {
     /// Rows added that may be a transaction the table already had: the new
     /// row's ID, and the other's. The new row has it as `maybe_same_as`.
     pub unsure: Vec<(TransactionId, TransactionId)>,
+    /// What copies said that differs from the table, a line for each column.
+    /// The transactions have them in `conflicts`.
+    pub conflicts: Vec<String>,
 }
 
 /// Every transaction, by ID.
@@ -337,7 +426,7 @@ impl Table {
             let line = i + 2;
             let record = record.with_context(|| format!("line {line} of the table"))?;
             let cells: Vec<&str> = record.iter().collect();
-            let cells: &[&str; 18] = cells
+            let cells: &[&str; 19] = cells
                 .as_slice()
                 .try_into()
                 .ok()
@@ -424,17 +513,7 @@ impl Table {
             bail!("{} and {} can't be one transaction: {} / {}", kept.id, other.id, kept.short(), other.short());
         }
         if let Some(row) = self.rows.get_mut(&kept.id) {
-            fill(&mut row.currency, other.currency.as_ref());
-            fill(&mut row.text, other.text.as_ref());
-            fill(&mut row.counterparty_name, other.counterparty_name.as_ref());
-            fill(&mut row.counterparty, other.counterparty.as_ref());
-            fill(&mut row.balance, other.balance.as_ref());
-            fill(&mut row.reference, other.reference.as_ref());
-            fill(&mut row.time, other.time.as_ref());
-            fill(&mut row.value_date, other.value_date.as_ref());
-            fill(&mut row.transaction_date, other.transaction_date.as_ref());
-            fill(&mut row.original_amount, other.original_amount.as_ref());
-            fill(&mut row.original_currency, other.original_currency.as_ref());
+            row.absorb(&other);
             if row.maybe_same_as.as_ref() == Some(&other.id) {
                 row.maybe_same_as = None;
             }
@@ -451,6 +530,13 @@ impl Table {
         self.rows.values().filter(|row| row.same_as.is_none())
     }
 
+    /// The raw files that rows have been read from. Reading a file puts
+    /// every one of its rows in the table, so a file with rows that is here
+    /// has been read.
+    pub fn files(&self) -> BTreeSet<&str> {
+        self.rows.values().flat_map(|row| &row.sources).map(|origin| origin.file.as_str()).collect()
+    }
+
     /// Takes in the rows of one file of `account`. A row that is surely a
     /// transaction the table has fills in what that one lacks; any other row
     /// is added, with `maybe_same_as` set if it may be one the table has.
@@ -462,37 +548,14 @@ impl Table {
     /// one. A row that was read from the same place before is the row it
     /// became then, and adds nothing.
     ///
-    /// What the table has is never overwritten. If a copy says something
-    /// else than the table about a field both have, the read fails, naming
-    /// each such field, and the table is left as it was.
+    /// What the table has is never overwritten. Where a copy with a
+    /// transaction's reference says something else about a field both have,
+    /// the transaction keeps what it had and notes the copy in `conflicts`.
     pub fn read(
         &mut self,
         account: &str,
         rows: &[BankTransaction],
         mint: &mut dyn FnMut() -> TransactionId,
-    ) -> Result<Reading> {
-        let mut table = self.clone();
-        let mut said = Vec::new();
-        let reading = table.take_in(account, rows, mint, &mut said);
-        if !said.is_empty() {
-            bail!(
-                "{} copies say something else than the table, which was left as it was:\n  {}",
-                said.len(),
-                said.join("\n  ")
-            );
-        }
-        *self = table;
-        Ok(reading)
-    }
-
-    /// What [`Table::read`] does, noting in `said` where a copy says
-    /// something else than the table.
-    fn take_in(
-        &mut self,
-        account: &str,
-        rows: &[BankTransaction],
-        mint: &mut dyn FnMut() -> TransactionId,
-        said: &mut Vec<String>,
     ) -> Reading {
         let mut reading = Reading::default();
         let mut rows: Vec<&BankTransaction> = rows.iter().collect();
@@ -506,7 +569,7 @@ impl Table {
                 taken.insert(id);
                 reading.matched += 1;
             } else if let Some(id) = self.surely(account, row, &taken) {
-                self.fill(&id, row, said);
+                self.fill(&id, row, &mut reading.conflicts);
                 taken.insert(id);
                 reading.matched += 1;
             } else {
@@ -553,7 +616,8 @@ impl Table {
         let text = text_of(&row.description);
         candidates
             .iter()
-            .find(|stored| by_reference.is_empty() && stored.looks_like(row) && stored.text == text)
+            .filter(|stored| by_reference.is_empty() && stored.looks_like(row) && stored.text == text)
+            .find(|stored| stored.differences(&stored.read_as(row)).is_empty())
             .map(|stored| stored.id.clone())
     }
 
@@ -571,25 +635,19 @@ impl Table {
     }
 
     /// Fills in what the transaction `id` lacks from `row`, a copy of it.
-    /// What it has stays, and where the copy says something else that is
-    /// noted in `said`.
+    /// What it has stays, and where the copy says something else, the
+    /// transaction notes the copy and `said` gets a line for each column.
     fn fill(&mut self, id: &TransactionId, row: &BankTransaction, said: &mut Vec<String>) {
         let Some(stored) = self.rows.get_mut(id) else { return };
-        let short = stored.short();
-        let mut differs = Vec::new();
-        settle("the currency", &mut stored.currency, text_of(&row.currency).as_ref(), &mut differs);
-        settle("the text", &mut stored.text, text_of(&row.description).as_ref(), &mut differs);
-        settle("the counterparty's name", &mut stored.counterparty_name, row.counterparty_name.as_ref(), &mut differs);
-        settle("the counterparty", &mut stored.counterparty, row.counterparty.as_ref(), &mut differs);
-        settle("the balance", &mut stored.balance, row.balance_after.as_ref(), &mut differs);
-        settle("the reference", &mut stored.reference, row.bank_ref.as_ref(), &mut differs);
-        settle("the time of day", &mut stored.time, row.time.as_ref(), &mut differs);
-        settle("the value date", &mut stored.value_date, row.value_date.as_ref(), &mut differs);
-        settle("the transaction date", &mut stored.transaction_date, row.transaction_date.as_ref(), &mut differs);
-        settle("the original amount", &mut stored.original_amount, row.original_amount.as_ref(), &mut differs);
-        settle("the original currency", &mut stored.original_currency, row.original_currency.as_ref(), &mut differs);
-        let file = row.origins.first().map_or("?", |o| o.file.as_str());
-        said.extend(differs.into_iter().map(|differs| format!("{short}: {differs} in {file}")));
+        let copy = stored.read_as(row);
+        let differences = stored.differences(&copy);
+        if !differences.is_empty() {
+            let from = row.origin();
+            said.extend(differences.iter().map(|(_, says)| format!("{}: {says} in {}", stored.short(), place(from))));
+            let columns = differences.iter().map(|(column, _)| (*column).to_owned()).collect();
+            stored.conflicts.push(Conflict { place: from.clone(), columns });
+        }
+        stored.absorb(&copy);
         for origin in &row.origins {
             if !stored.sources.contains(origin) {
                 stored.sources.push(origin.clone());
