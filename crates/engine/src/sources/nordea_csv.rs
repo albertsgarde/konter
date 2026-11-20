@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, bail};
 
 use super::FileContext;
-use crate::config::Format;
 use crate::dates::parse_ymd_slash;
 use crate::model::{BankTransaction, Origin};
 use crate::money::parse_danish;
@@ -72,7 +71,6 @@ pub fn parse(text: &str, ctx: &FileContext) -> Result<Vec<BankTransaction>> {
             Ok(Some(BankTransaction {
                 id: String::new(),
                 source: ctx.source.clone(),
-                format: Some(Format::NordeaCsv),
                 booked,
                 time: None,
                 value_date: None,
@@ -89,6 +87,7 @@ pub fn parse(text: &str, ctx: &FileContext) -> Result<Vec<BankTransaction>> {
                 raw,
                 origins: vec![Origin { file: ctx.rel.clone(), line }],
                 order_hint: -i64::try_from(line).unwrap_or(i64::MAX), // newest first
+                unsettled: None,
             }))
         })()
         .with_context(|| format!("line {line}"))?;

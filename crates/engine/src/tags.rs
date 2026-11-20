@@ -21,6 +21,10 @@ pub const SUBSCRIPTION: &str = "subscription";
 pub const PAYS: &str = "pays";
 /// On an opening balance or a balance check: the source it's for.
 pub const SOURCE: &str = "source";
+/// On a bank transaction that the store has something unsettled about: what
+/// (`maybe-same-as`, `conflicts`, or both with a `+` between).
+pub const UNSETTLED: &str = "unsettled";
 
 /// Every one of them.
-pub const ALL: [&str; 9] = [BANK_ID, RULE, PURCHASED, ORIGINAL, TRANSFER, TRANSFER_PAIR, SUBSCRIPTION, PAYS, SOURCE];
+pub const ALL: [&str; 10] =
+    [BANK_ID, RULE, PURCHASED, ORIGINAL, TRANSFER, TRANSFER_PAIR, SUBSCRIPTION, PAYS, SOURCE, UNSETTLED];

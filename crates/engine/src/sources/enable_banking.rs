@@ -18,7 +18,6 @@ use serde_json::Value;
 
 use super::FileContext;
 use super::stored::Snapshot;
-use crate::config::Format;
 use crate::model::{BankTransaction, Origin};
 use crate::money::parse_plain;
 
@@ -149,7 +148,6 @@ fn parse_transaction(t: &Value, index: usize, ctx: &FileContext) -> Result<Optio
     Ok(Some(BankTransaction {
         id: String::new(),
         source: ctx.source.clone(),
-        format: Some(Format::EnableBanking),
         booked,
         time: None,
         value_date: date_at(t, &["value_date"])?,
@@ -166,6 +164,7 @@ fn parse_transaction(t: &Value, index: usize, ctx: &FileContext) -> Result<Optio
         raw,
         origins: vec![Origin { file: ctx.rel.clone(), line: index as u64 + 1 }],
         order_hint: i64::try_from(index).unwrap_or(i64::MAX),
+        unsettled: None,
     }))
 }
 

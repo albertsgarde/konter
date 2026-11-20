@@ -428,12 +428,13 @@ fn list(repo: &Repo, config: &Config, source: Option<&str>) -> Result<ExitCode> 
         for t in &data.txs {
             writeln!(
                 Stdout,
-                "{}  {}  {:>12}  {:>12}  {}",
+                "{}  {}  {:>12}  {:>12}  {}{}",
                 t.id,
                 t.booked,
                 fmt_num(t.amount),
                 t.balance_after.map(fmt_num).unwrap_or_default(),
-                name_instead(t).map_or_else(|| t.description.clone(), |name| format!("{} [{name}]", t.description))
+                name_instead(t).map_or_else(|| t.description.clone(), |name| format!("{} [{name}]", t.description)),
+                t.unsettled.as_ref().map(|what| format!("  ⚠ not settled ({what})")).unwrap_or_default()
             )?;
         }
     }
@@ -445,6 +446,8 @@ fn explain(repo: &Repo, config: &Config, id: &str) -> Result<ExitCode> {
     let build = books::build(repo, config, today())?;
     let t = build.loaded.find(id).with_context(|| format!("no bank transaction with ID {id}"))?;
     print_transaction(t)?;
+    // The ID given may be a row's that counts as this transaction.
+    let id = t.id.as_str();
     let outcome = &build.generated.outcomes[id];
     writeln!(Stdout, "\nrules:")?;
     if let Some(pin) = build.rules.pins.get(id) {
@@ -574,8 +577,8 @@ fn write_site(repo: &Repo, config: &Config, build: &konter_engine::pipeline::Bui
         (Page::Income, "Income per account and month.".to_string()),
         (Page::Gaps, gaps.headline(currency)),
     ];
-    let table = store::table(repo)?;
-    let to_settle = konter_diagnostics::unsettled::html(&table, &store::conflicting_copies(repo, config, &table));
+    let (table, _) = store::tables(repo)?;
+    let to_settle = konter_diagnostics::unsettled::html(&table);
     let home = site::Home {
         subtitle: &format!("As of {as_of}"),
         unmapped: &format!("{} {currency}", gaps.unmapped_money()),
@@ -655,6 +658,7 @@ fn print_transaction(t: &BankTransaction) -> Result<()> {
     opt("time", t.time.map(|x| x.strftime("%H:%M").to_string()))?;
     opt("value date", t.value_date.map(|d| d.to_string()))?;
     opt("purchased", t.transaction_date.map(|d| d.to_string()))?;
+    opt("not settled", t.unsettled.as_ref().map(|what| format!("{what} (the site's front page has what)")))?;
     writeln!(Stdout, "  amount        {} {}", fmt_num(t.amount), t.currency)?;
     opt(
         "original",
@@ -665,7 +669,7 @@ fn print_transaction(t: &BankTransaction) -> Result<()> {
     opt("cp. name", t.counterparty_name.clone())?;
     opt("balance after", t.balance_after.map(fmt_num))?;
     opt("bank ref", t.bank_ref.clone())?;
-    writeln!(Stdout, "  raw ({}):", t.format.map_or_else(|| "its file can't be read".to_owned(), |f| f.to_string()))?;
+    writeln!(Stdout, "  raw:")?;
     for (k, v) in &t.raw {
         writeln!(Stdout, "    {k:<15} {v:?}")?;
     }

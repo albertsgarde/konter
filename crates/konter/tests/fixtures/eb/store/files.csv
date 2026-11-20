@@ -1,0 +1,4 @@
+file,account,exported,balance_date,balance
+nordea/1234567890/Konto 1234567890 - 2026-01-31 10.00.00.csv,bank:a,2026-01-31,,
+nordea/1234567890/eb-2026-02-03T10-00-00.json,bank:a,2026-02-03,2026-02-03,17375
+other/42/eb-2026-02-03T10-00-00.json,other:c,2026-02-03,2026-02-02,400

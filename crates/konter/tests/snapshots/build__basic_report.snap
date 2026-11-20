@@ -18,7 +18,6 @@ expression: build.findings.render(true)
 · ignored            2 transactions
       00000000-0000-4000-8000-000000000005  2026-01-15      -100.00  "Charge": charge and refund cancel out
       00000000-0000-4000-8000-000000000006  2026-01-15       100.00  "Refund": charge and refund cancel out
-✓ manifest           2 raw files match data/MANIFEST
 ✓ data               bank:a: 9 transactions 2026-01-02 … 2026-01-30 from 1 files, opening balance 1050.00, running balance unbroken
 ✓ data               lunar:b: 2 transactions 2026-01-10 … 2026-01-29 from 1 files, opening balance 50.00, running balance unbroken
 ✓ books              14 transactions balance, 11 balance assertions hold, accounts declared

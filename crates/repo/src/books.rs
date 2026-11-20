@@ -85,7 +85,8 @@ pub fn hledger_check(repo: &Repo, findings: &mut Findings) {
 }
 
 /// Rebuilds with the `--as-of` recorded in the committed journal and checks the
-/// output is byte-identical.
+/// output is byte-identical. Also checks the raw files against their manifest,
+/// and that the store has read every one of them.
 pub fn verify(repo: &Repo, config: &Config) -> Result<Findings> {
     let path = repo.ledger(GENERATED);
     let committed = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -93,6 +94,10 @@ pub fn verify(repo: &Repo, config: &Config) -> Result<Findings> {
         .context("ledger/generated.journal has no `--as-of` header; run `konter build` first")?;
     let mut build = build(repo, config, as_of)?;
     let mut findings = std::mem::take(&mut build.findings);
+    // A build goes by the store alone. Here is where it's checked that the
+    // store has what `data/` has, and that `data/` is as it was recorded.
+    crate::store::check_data(repo, config, &mut findings)?;
+    crate::store::check_read(repo, config, &mut findings)?;
     for (file, fresh) in files(&build) {
         let committed = std::fs::read_to_string(repo.ledger(file)).unwrap_or_default();
         if committed == fresh {

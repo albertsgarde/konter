@@ -98,8 +98,10 @@ fn add_export_doesnt_accept_a_changed_raw_file() {
     let changed: String =
         original.lines().filter(|l| !l.contains("Concert tickets")).map(|l| format!("{l}\n")).collect();
     std::fs::write(&path, changed).expect("the export is written");
-    let build = konter(&root).args(["build", "--as-of", "2026-02-15"]).output().expect("konter runs");
-    assert!(text(&build).contains("content changed since it was added"), "{}", text(&build));
+    // The commands that read data/ say so. (A build doesn't look there: the
+    // books come from the store, which has the row.)
+    let stored = konter(&root).arg("store").output().expect("konter runs");
+    assert!(text(&stored).contains("content changed since it was added"), "{}", text(&stored));
 
     let run = konter(&root).arg("add-export").arg(&path).output().expect("konter runs");
     // Refusing is fine; recording the changed file isn't.

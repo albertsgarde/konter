@@ -5,8 +5,6 @@ use std::collections::BTreeMap;
 use jiff::civil::{Date, Time};
 use rust_decimal::Decimal;
 
-use crate::config::Format;
-
 /// Where a bank transaction was read from.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Origin {
@@ -23,8 +21,6 @@ pub struct BankTransaction {
     /// of a raw file, which isn't a transaction of the table yet.
     pub id: String,
     pub source: String,
-    /// The format of the raw file it was read from, if that file can be read.
-    pub format: Option<Format>,
     pub booked: Date,
     pub time: Option<Time>,
     pub value_date: Option<Date>,
@@ -44,6 +40,12 @@ pub struct BankTransaction {
     pub origins: Vec<Origin>,
     /// Position within its file, lower = earlier. Breaks ties when ordering a day.
     pub order_hint: i64,
+    /// Set on a transaction of the books that the store has something
+    /// unsettled about, for whatever shows it to say so: `maybe-same-as` when
+    /// another row of the table may be the same transaction and counts as it,
+    /// `conflicts` when a copy says something else than the table, or both
+    /// with a `+` between.
+    pub unsettled: Option<String>,
 }
 
 impl BankTransaction {

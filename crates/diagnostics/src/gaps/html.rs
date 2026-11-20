@@ -255,6 +255,9 @@ impl Gaps<'_> {
             if let Some(note) = self.later_notes.get(t.id.as_str()) {
                 notes.push(later_note(note));
             }
+            if t.unsettled.is_some() {
+                notes.push("not settled".into());
+            }
             if let Some(other) = self.paired.get(t.id.as_str()) {
                 notes.push(format!("↔ {other}"));
             }

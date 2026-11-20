@@ -5,16 +5,16 @@
 
 mod common;
 
-use common::{NORDEA, config, id, ids, load, load_settled, nordea_csv, nordea_rel};
+use common::{NORDEA, config, id, load, load_settled, nordea_csv, nordea_rel};
 use jiff::civil::date;
-use konter_engine::config::{Config, Format};
+use konter_engine::config::Config;
 use konter_engine::engine::Status;
 use konter_engine::findings::{Findings, Severity};
 use konter_engine::manual::Manual;
 use konter_engine::pipeline::{self, Build};
 use konter_engine::rules::Rules;
 use konter_engine::sources::{self, Loaded};
-use konter_engine::store::Table;
+use konter_engine::store::{Files, Table};
 
 /// `bank:a` with both an export and fetched data.
 fn both_formats() -> Config {
@@ -79,6 +79,8 @@ fn a_row_we_arent_sure_of_counts_as_the_transaction_it_may_be() {
     assert_eq!(had, [(groceries.as_str(), "Groceries", 2), (coffee.as_str(), "Coffee", 2)]);
     assert!(a.has_running_balance && a.chain_ok);
     assert_eq!(a.opening, Some(150.into()));
+    // The one that a row counts as says that something about it isn't settled.
+    assert_eq!((a.txs[0].unsettled.as_deref(), a.txs[1].unsettled.as_deref()), (Some("maybe-same-as"), None));
     // The coffee gained the fetched copy's reference, and the groceries
     // didn't: the row that has it isn't known to be them.
     assert_eq!((a.txs[0].bank_ref.as_deref(), a.txs[1].bank_ref.as_deref()), (None, Some("r2")));
@@ -116,7 +118,8 @@ fn what_is_pinned_on_a_joined_row_follows_it() {
     assert_eq!(found(&findings, Severity::Warning, "store"), [""; 0]);
     let a = &loaded.sources["bank:a"];
     assert_eq!(a.txs.len(), 2);
-    // Joining gave the groceries the reference.
+    // Joined, nothing about them is unsettled, and they have the reference.
+    assert_eq!(a.txs[0].unsettled, None);
     assert_eq!(
         (a.txs[0].id.as_str(), a.txs[0].bank_ref.as_deref(), a.txs[0].origins.len()),
         (&*groceries, Some("r1"), 2)
@@ -152,48 +155,84 @@ fn what_is_pinned_on_a_joined_row_follows_it() {
     assert!(food && !other);
 }
 
-/// The table says which transactions there are. A raw file it hasn't read is
-/// an error that names the file, and the books are built without its rows; a
-/// transaction whose raw file can't be read any more is in the books all the
-/// same, without the original fields only the file had.
+/// A build goes by the store alone. The transactions, their original fields
+/// and their order are the table's; how far the data reaches is the files'
+/// table's. Without the files' table the transactions are there all the same.
 #[test]
-fn the_table_and_not_the_raw_files_says_what_the_transactions_are() {
+fn everything_a_build_takes_is_in_the_store() {
     let config = both_formats();
-    let rel = nordea_rel("2026-01-07 10.00.00");
-    let export = sources::parse_raw(&config, "bank:a", &rel, &nordea_csv(&EXPORT), None).expect("the export parses");
-    let fetch = || sources::parse_raw(&config, "bank:a", FETCHED, FETCH, None).expect("the fetch parses");
-    let mut table = Table::default();
-    table.read("bank:a", &fetch().rows, &mut ids());
+    let files = files(&nordea_csv(&EXPORT));
+    let (table, read) = common::stored(&config, &borrowed(&files), |_| {});
+    let mut findings = Findings::default();
+    let data = sources::stored_source(&config, "bank:a", &table, &read, &mut findings);
+    assert_eq!(found(&findings, Severity::Warning, "data"), [""; 0]);
+    assert_eq!(descriptions(&data), ["Groceries", "Coffee"]);
+    assert_eq!(data.txs[0].raw.get("Beskrivelse").map(String::as_str), Some("Groceries"));
+    let (export, day) = (nordea_rel("2026-01-07 10.00.00"), |d| Some(date(2026, 1, d)));
+    let summaries: Vec<_> = data.files.iter().map(|f| (f.rel.as_str(), f.count, f.first, f.last, f.exported)).collect();
+    assert_eq!(summaries, [(export.as_str(), 2, day(5), day(6), day(7)), (FETCHED, 2, day(5), day(6), day(16))]);
+    assert_eq!(data.covered_until(), day(16));
 
     let mut findings = Findings::default();
-    let data = sources::stored_source(&config, "bank:a", &table, vec![export, fetch()], &mut findings);
-    assert_eq!(
-        found(&findings, Severity::Error, "store"),
-        [format!(
-            "bank:a: 1 raw files haven't been read into the table [\"data/{rel}\", \"→ the books are built without \
-             their rows; `konter store` reads the ones data/MANIFEST lists\"]"
-        )]
-    );
-    let texts: Vec<&str> = data.txs.iter().map(|t| t.description.as_str()).collect();
-    assert_eq!(texts, ["GROCERIES APS", "Coffee"]);
-    assert_eq!(data.txs[0].format, Some(Format::EnableBanking));
-    assert!(data.txs[0].raw.contains_key("entry_reference"), "{:?}", data.txs[0].raw);
-    assert_eq!(data.files.len(), 2);
-
-    let mut findings = Findings::default();
-    let data = sources::stored_source(&config, "bank:a", &table, Vec::new(), &mut findings);
-    assert_eq!(found(&findings, Severity::Error, "store"), [""; 0]);
+    let bare = sources::stored_source(&config, "bank:a", &table, &Files::default(), &mut findings);
     assert_eq!(found(&findings, Severity::Warning, "data"), ["bank:a: no raw data yet []"]);
-    let had: Vec<_> =
-        data.txs.iter().map(|t| (t.description.as_str(), t.format, t.raw.len(), t.origin().line)).collect();
-    assert_eq!(had, [("GROCERIES APS", None, 0, 1), ("Coffee", None, 0, 2)]);
-    assert!(data.has_running_balance && data.chain_ok);
+    assert_eq!(descriptions(&bare), ["Groceries", "Coffee"]);
+    let summaries: Vec<_> = bare.files.iter().map(|f| (f.rel.as_str(), f.count, f.exported)).collect();
+    assert_eq!(summaries, [(export.as_str(), 2, None), (FETCHED, 2, None)]);
+    assert_eq!(bare.covered_until(), day(6));
+    assert!(bare.has_running_balance && bare.chain_ok);
 
-    // Another account's rows aren't this one's.
-    let mut elsewhere = Table::default();
-    elsewhere.read("bank:other", &fetch().rows, &mut ids());
-    let data = sources::stored_source(&config, "bank:a", &elsewhere, Vec::new(), &mut Findings::default());
-    assert!(data.txs.is_empty());
+    // Another account's rows and files aren't this one's.
+    let elsewhere: Vec<(&str, &str, &str)> =
+        borrowed(&files).into_iter().map(|(_, rel, text)| ("bank:other", rel, text)).collect();
+    let other = NORDEA.replace("formats = [\"nordea-csv\"]", "formats = [\"nordea-csv\", \"enable-banking\"]")
+        + "\n[sources.\"bank:other\"]\nbank = \"nordea\"\nnumber = \"1234567890\"\nledger = \"assets:bank:other\"\n\
+           formats = [\"nordea-csv\", \"enable-banking\"]\n";
+    let (table, read) = common::stored(&common::config(&other), &elsewhere, |_| {});
+    let data = sources::stored_source(&config, "bank:a", &table, &read, &mut Findings::default());
+    assert!(data.txs.is_empty() && data.files.is_empty());
+}
+
+/// A transaction that the store has something unsettled about says so
+/// wherever it's shown: the journal has it as a tag. A copy that says
+/// something else is one such thing, a row that may be the transaction
+/// another, and a transaction can have both.
+#[test]
+fn a_transaction_with_something_unsettled_is_tagged() {
+    const LUNAR: &str = "[books]\nstart = 2026-01-01\n\n[sources.\"lunar:b\"]\nbank = \"lunar\"\nnumber = \"555\"\n\
+         ledger = \"assets:bank:b\"\nformats = [\"lunar-csv\", \"enable-banking\"]\nunmatched = \"allow\"\n";
+    let config = config(LUNAR);
+    let fetched = |reference: &str, day: &str, text: &str| {
+        format!(
+            r#"{{"acct_fetch": 1, "fetched_at": "2026-01-16T09:00:00Z", "pages": [{{"transactions": [{{"entry_reference": "{reference}", "booking_date": "2026-01-{day}", "status": "BOOK", "credit_debit_indicator": "DBIT", "transaction_amount": {{"currency": "DKK", "amount": "50.00"}}, "remittance_information": ["{text}"]}}]}}]}}"#
+        )
+    };
+    // The same reference in other words, and then on another day.
+    let (first, worded, moved) =
+        (fetched("r1", "05", "Groceries"), fetched("r1", "05", "GROCERIES APS"), fetched("r1", "06", "Groceries"));
+    let unsettled = |files: &[(&str, &str, &str)]| {
+        let mut findings = Findings::default();
+        let loaded = load(&config, files, &mut findings);
+        let marks: Vec<Option<String>> = loaded.sources["lunar:b"].txs.iter().map(|t| t.unsettled.clone()).collect();
+        let build = books(&config, "", loaded, findings);
+        let tags: Vec<String> = build
+            .generated
+            .txs
+            .iter()
+            .flat_map(|tx| &tx.tags)
+            .filter(|(name, _)| name == "unsettled")
+            .map(|(_, what)| what.clone())
+            .collect();
+        (marks, tags)
+    };
+    let one = ("lunar:b", "lunar/555/eb-1.json", first.as_str());
+    let two = ("lunar:b", "lunar/555/eb-2.json", worded.as_str());
+    let three = ("lunar:b", "lunar/555/eb-3.json", moved.as_str());
+    assert_eq!(unsettled(&[one]), (vec![None], vec![]));
+    assert_eq!(unsettled(&[one, two]), (vec![Some("conflicts".to_owned())], vec!["conflicts".to_owned()]));
+    assert_eq!(unsettled(&[one, three]), (vec![Some("maybe-same-as".to_owned())], vec!["maybe-same-as".to_owned()]));
+    let both = "maybe-same-as+conflicts".to_owned();
+    assert_eq!(unsettled(&[one, two, three]), (vec![Some(both.clone())], vec![both]));
 }
 
 /// A transaction that a file covering its day doesn't have is reported,
@@ -375,4 +414,35 @@ fn transactions_from_the_start_on_are_in_the_books() {
     assert_eq!(data.before_start.iter().collect::<Vec<_>>(), [&id(1).to_string()]);
     assert_eq!(data.opening, Some(1000.into()));
     assert_eq!((data.files[0].count, data.files[0].first), (2, Some(date(2026, 1, 1))));
+}
+
+/// A balance written down beside an export is a line of its own among the
+/// files that were read. It is a balance the bank reported, and no file of
+/// transactions: the source has one file, and its opening balance is worked
+/// back from that balance.
+#[test]
+fn a_balance_beside_an_export_is_a_balance_and_no_file_of_transactions() {
+    const LUNAR: &str = "[books]\nstart = 2026-01-01\n\n[sources.\"lunar:b\"]\nbank = \"lunar\"\nnumber = \"555\"\n\
+         ledger = \"assets:bank:b\"\nformats = [\"lunar-csv\", \"enable-banking\"]\nunmatched = \"allow\"\n";
+    let config = config(LUNAR);
+    let fetch = r#"{"acct_fetch": 1, "fetched_at": "2026-01-16T09:00:00Z", "pages": [{"transactions": [{"entry_reference": "r1", "booking_date": "2026-01-05", "status": "BOOK", "credit_debit_indicator": "DBIT", "transaction_amount": {"currency": "DKK", "amount": "50.00"}, "remittance_information": ["Groceries"]}]}]}"#;
+    let export = "Date,Time,Title,Amount,Balance,Transaction ID\n06.01.2026,09.00,Coffee,\"-20,00\",\"80,00\",r2\n";
+    let beside = "date = 2026-01-06\nbalance = \"80.00\"\n";
+    let (mut table, mut files, mut mint) = (Table::default(), Files::default(), common::ids());
+    for (rel, text, beside) in [("lunar/555/eb-1.json", fetch, None), ("lunar/555/statement.csv", export, Some(beside))]
+    {
+        let file = sources::parse_raw(&config, "lunar:b", rel, text, beside).expect("the file parses");
+        sources::read_into(&mut table, &mut files, "lunar:b", &file, &mut mint);
+    }
+    let mut findings = Findings::default();
+    let data = sources::stored_source(&config, "lunar:b", &table, &files, &mut findings);
+    assert!(!findings.has_errors(), "{}", findings.render(true));
+    let rels: Vec<&str> = data.files.iter().map(|f| f.rel.as_str()).collect();
+    assert_eq!(rels, ["lunar/555/eb-1.json", "lunar/555/statement.csv"]);
+    let balances: Vec<_> = data.snapshots.iter().map(|s| (s.date, s.balance, s.file.as_str())).collect();
+    assert_eq!(balances, [(date(2026, 1, 6), 80.into(), "lunar/555/statement.csv.balance.toml")]);
+    // The fetched row has no running balance, so the balance is what the
+    // opening is worked back from: 80 after the groceries and the coffee.
+    assert!(!data.has_running_balance);
+    assert_eq!(data.opening, Some(150.into()));
 }

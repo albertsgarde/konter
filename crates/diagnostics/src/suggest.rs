@@ -206,7 +206,6 @@ mod tests {
         let tx = |description: &str, name: Option<&str>| BankTransaction {
             id: String::new(),
             source: "test:a".into(),
-            format: Some(konter_engine::config::Format::EnableBanking),
             booked: jiff::civil::date(2026, 1, 1),
             time: None,
             value_date: None,
@@ -223,6 +222,7 @@ mod tests {
             raw: BTreeMap::new(),
             origins: Vec::new(),
             order_hint: 0,
+            unsettled: None,
         };
         // Only a reference number: grouped by the merchant instead.
         let a = tx("74300000000000000000017", Some("NETTO SCANNGO"));

@@ -1,0 +1,3 @@
+file,account,exported,balance_date,balance
+lunar/555/statement.csv,lunar:b,,,
+nordea/1234567890/Konto 1234567890 - 2026-01-31 10.00.00.csv,bank:a,2026-01-31,,

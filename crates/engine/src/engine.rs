@@ -98,6 +98,10 @@ fn header(t: &BankTransaction, rule: &str, seq: usize, output: Option<&Output>) 
     if let (Some(a), Some(c)) = (t.original_amount, &t.original_currency) {
         tags.push((tags::ORIGINAL.into(), format!("{} {c}", fmt_num(a))));
     }
+    // Whatever shows the transaction can say that something about it isn't settled.
+    if let Some(what) = &t.unsettled {
+        tags.push((tags::UNSETTLED.into(), what.clone()));
+    }
     let mut comments = Vec::new();
     // Without a payee from the rule, a description that's only a reference
     // number gives way to the counterparty's name.
@@ -690,7 +694,6 @@ mod tests {
         BankTransaction {
             id: "nb-2026-01-01-000000".into(),
             source: "test:a".into(),
-            format: Some(crate::config::Format::EnableBanking),
             booked: jiff::civil::date(2026, 1, 1),
             time: None,
             value_date: None,
@@ -707,6 +710,7 @@ mod tests {
             raw: BTreeMap::new(),
             origins: Vec::new(),
             order_hint: 0,
+            unsettled: None,
         }
     }
 

@@ -12,8 +12,11 @@
 //! and a copy that says something else than its transaction is noted on it
 //! (`conflicts`), both for a person to settle.
 //!
-//! The books are built from the table (`sources::stored`): the raw files are
-//! where its rows came from.
+//! The books are built from the store alone (`sources::stored`): the raw
+//! files are where its rows came from, and a build doesn't look at them. So
+//! the store has everything of them that a build needs. Besides the table of
+//! transactions that is a second, small table, [`Files`]: the raw files that
+//! have been read, each with what it says as a whole.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -90,6 +93,8 @@ pub struct Stored {
     /// The bank's own reference for it.
     pub reference: Option<String>,
     pub time: Option<Time>,
+    /// Where it comes among the transactions of its day.
+    pub place: Option<Place>,
     pub value_date: Option<Date>,
     pub transaction_date: Option<Date>,
     pub original_amount: Option<Decimal>,
@@ -104,8 +109,22 @@ pub struct Stored {
     /// The copies of it that say something else than this row about a field
     /// both have, for a person to settle. The row keeps what it had.
     pub conflicts: Vec<Conflict>,
+    /// Every field of the first copy of it that was read, as its file has
+    /// them: what rules on a format's own fields match.
+    pub raw: BTreeMap<String, String>,
     /// Every place in the raw files it was read from.
     pub sources: Vec<Origin>,
+}
+
+/// A transaction's place within its day: the `nth`, from the oldest, of the
+/// `of` rows that a file has on that day. Places in two files can't be
+/// compared, so a transaction has its place from the file with the most rows
+/// on its day: every export of a day starts at the day's beginning, so that
+/// one has all of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub nth: u32,
+    pub of: u32,
 }
 
 /// A copy of a transaction that says something else than its row.
@@ -113,12 +132,12 @@ pub struct Stored {
 pub struct Conflict {
     /// Where the copy is in the raw files.
     pub place: Origin,
-    /// The columns it differs in.
-    pub columns: Vec<String>,
+    /// What it says in each column it differs in, as the table would write it.
+    pub says: BTreeMap<String, String>,
 }
 
 /// The table's columns, in order. The ones that are awkward to read come last.
-const COLUMNS: [&str; 19] = [
+const COLUMNS: [&str; 21] = [
     "id",
     "account",
     "date",
@@ -130,6 +149,7 @@ const COLUMNS: [&str; 19] = [
     "balance",
     "reference",
     "time",
+    "place",
     "value_date",
     "transaction_date",
     "original_amount",
@@ -137,16 +157,24 @@ const COLUMNS: [&str; 19] = [
     "same_as",
     "maybe_same_as",
     "conflicts",
+    "raw",
     "sources",
 ];
 
-/// Between the places in `sources` and the copies in `conflicts`: no path
-/// under `data/` has one.
+/// Between the places in `sources`: no path under `data/` has one.
 const BETWEEN_PLACES: char = '|';
 
-/// Between a copy's place and its columns in `conflicts`, and between the columns.
-const BEFORE_COLUMNS: char = '=';
-const BETWEEN_COLUMNS: char = '+';
+/// Between the two numbers of a `place`: `3/7` is the third of seven.
+const WITHIN_PLACE: char = '/';
+
+/// A copy in a `conflicts` cell, which is a JSON list of them.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WrittenConflict {
+    /// `file:line`.
+    at: String,
+    says: BTreeMap<String, String>,
+}
 
 fn text_of(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
@@ -178,22 +206,48 @@ fn sources_of(value: &str) -> Result<Vec<Origin>> {
     value.split(BETWEEN_PLACES).filter(|place| !place.is_empty()).map(place_of).collect()
 }
 
-/// A `conflicts` cell: `file:line=column+column` for each copy.
+/// A `place` cell: `nth/of`.
+fn nth_of(value: &str) -> Result<Place> {
+    let not_one = || format!("{value:?} isn't a place within a day, such as 3{WITHIN_PLACE}7");
+    let (nth, of) = value.split_once(WITHIN_PLACE).with_context(not_one)?;
+    let place = Place { nth: nth.parse().with_context(not_one)?, of: of.parse().with_context(not_one)? };
+    if place.nth == 0 || place.nth > place.of {
+        bail!("{}", not_one());
+    }
+    Ok(place)
+}
+
+/// A `conflicts` cell: a JSON list with, for each copy, where it is and what
+/// it says in the columns it differs in.
 fn conflicts_of(value: &str) -> Result<Vec<Conflict>> {
-    value
-        .split(BETWEEN_PLACES)
-        .filter(|conflict| !conflict.is_empty())
-        .map(|conflict| {
-            let (place, columns) = conflict
-                .rsplit_once(BEFORE_COLUMNS)
-                .with_context(|| format!("{conflict:?} isn't file:line{BEFORE_COLUMNS}columns"))?;
-            let columns: Vec<String> = columns.split(BETWEEN_COLUMNS).map(str::to_owned).collect();
-            if let Some(unknown) = columns.iter().find(|column| !COLUMNS.contains(&column.as_str())) {
-                bail!("{conflict:?} names {unknown:?}, which isn't a column");
-            }
-            Ok(Conflict { place: place_of(place)?, columns })
-        })
-        .collect()
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let written: Vec<WrittenConflict> =
+        serde_json::from_str(value).with_context(|| format!("{value:?} isn't a list of copies"))?;
+    let conflict = |copy: WrittenConflict| {
+        if let Some(unknown) = copy.says.keys().find(|column| !COLUMNS.contains(&column.as_str())) {
+            bail!("the copy at {} is said to differ in {unknown:?}, which isn't a column", copy.at);
+        }
+        Ok(Conflict { place: place_of(&copy.at)?, says: copy.says })
+    };
+    written.into_iter().map(conflict).collect()
+}
+
+/// A `raw` cell: a JSON object of the original fields, or nothing.
+fn raw_of(value: &str) -> Result<BTreeMap<String, String>> {
+    if value.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    serde_json::from_str(value).with_context(|| format!("{value:?} isn't a transaction's original fields"))
+}
+
+/// A JSON cell, empty when there's nothing to say.
+fn json_cell<T: serde::Serialize>(value: &T, nothing: bool) -> String {
+    if nothing {
+        return String::new();
+    }
+    serde_json::to_string(value).unwrap_or_default()
 }
 
 fn written<T>(value: Option<&T>, write: impl FnOnce(&T) -> String) -> String {
@@ -215,6 +269,7 @@ impl Stored {
             balance: row.balance_after,
             reference: row.bank_ref.clone(),
             time: row.time,
+            place: None,
             value_date: row.value_date,
             transaction_date: row.transaction_date,
             original_amount: row.original_amount,
@@ -222,11 +277,12 @@ impl Stored {
             same_as: None,
             maybe_same_as: None,
             conflicts: Vec::new(),
+            raw: row.raw.clone(),
             sources: row.origins.clone(),
         }
     }
 
-    fn from_cells(cells: &[&str; 19]) -> Result<Stored> {
+    fn from_cells(cells: &[&str; 21]) -> Result<Stored> {
         let [
             id,
             account,
@@ -239,6 +295,7 @@ impl Stored {
             balance,
             reference,
             time,
+            place,
             value_date,
             transaction_date,
             original_amount,
@@ -246,6 +303,7 @@ impl Stored {
             same_as,
             maybe_same_as,
             conflicts,
+            raw,
             sources,
         ] = *cells;
         if account.is_empty() {
@@ -266,6 +324,7 @@ impl Stored {
             balance: parsed(balance, parse_plain)?,
             reference: text_of(reference),
             time: parsed(time, time_of)?,
+            place: parsed(place, nth_of)?,
             value_date: parsed(value_date, date_of)?,
             transaction_date: parsed(transaction_date, date_of)?,
             original_amount: parsed(original_amount, parse_plain)?,
@@ -273,17 +332,15 @@ impl Stored {
             same_as: parsed(same_as, TransactionId::parse)?,
             maybe_same_as: parsed(maybe_same_as, TransactionId::parse)?,
             conflicts: conflicts_of(conflicts)?,
+            raw: raw_of(raw)?,
             sources: sources_of(sources)?,
         })
     }
 
-    fn cells(&self) -> [String; 19] {
+    fn cells(&self) -> [String; 21] {
         let places: Vec<String> = self.sources.iter().map(place).collect();
-        let conflicts: Vec<String> = self
-            .conflicts
-            .iter()
-            .map(|c| format!("{}{BEFORE_COLUMNS}{}", place(&c.place), c.columns.join(&BETWEEN_COLUMNS.to_string())))
-            .collect();
+        let conflicts: Vec<WrittenConflict> =
+            self.conflicts.iter().map(|c| WrittenConflict { at: place(&c.place), says: c.says.clone() }).collect();
         [
             self.id.to_string(),
             self.account.clone(),
@@ -296,13 +353,15 @@ impl Stored {
             written(self.balance.as_ref(), |b| canonical(*b)),
             self.reference.clone().unwrap_or_default(),
             written(self.time.as_ref(), Time::to_string),
+            written(self.place.as_ref(), |p| format!("{}{WITHIN_PLACE}{}", p.nth, p.of)),
             written(self.value_date.as_ref(), Date::to_string),
             written(self.transaction_date.as_ref(), Date::to_string),
             written(self.original_amount.as_ref(), |a| canonical(*a)),
             self.original_currency.clone().unwrap_or_default(),
             written(self.same_as.as_ref(), TransactionId::to_string),
             written(self.maybe_same_as.as_ref(), TransactionId::to_string),
-            conflicts.join(&BETWEEN_PLACES.to_string()),
+            json_cell(&conflicts, conflicts.is_empty()),
+            json_cell(&self.raw, self.raw.is_empty()),
             places.join(&BETWEEN_PLACES.to_string()),
         ]
     }
@@ -355,8 +414,22 @@ impl Stored {
         found
     }
 
+    /// Takes `place` if it's from a file with more rows on the day than the
+    /// one this row has its place from.
+    fn take_place(&mut self, place: Place) {
+        if self.place.is_none_or(|had| place.of > had.of) {
+            self.place = Some(place);
+        }
+    }
+
     /// Takes over what `copy` has and this row lacks. What this row has stays.
     fn absorb(&mut self, copy: &Stored) {
+        if self.raw.is_empty() {
+            self.raw.clone_from(&copy.raw);
+        }
+        if let Some(place) = copy.place {
+            self.take_place(place);
+        }
         fill(&mut self.currency, copy.currency.as_ref());
         fill(&mut self.text, copy.text.as_ref());
         fill(&mut self.counterparty_name, copy.counterparty_name.as_ref());
@@ -436,7 +509,7 @@ impl Table {
             let line = i + 2;
             let record = record.with_context(|| format!("line {line} of the table"))?;
             let cells: Vec<&str> = record.iter().collect();
-            let cells: &[&str; 19] = cells
+            let cells: &[&str; 21] = cells
                 .as_slice()
                 .try_into()
                 .ok()
@@ -580,13 +653,6 @@ impl Table {
         self.rows.values().flat_map(|row| row.conflicts.iter().map(move |conflict| (row, conflict))).collect()
     }
 
-    /// The raw files that rows have been read from. Reading a file puts
-    /// every one of its rows in the table, so a file with rows that is here
-    /// has been read.
-    pub fn files(&self) -> BTreeSet<&str> {
-        self.rows.values().flat_map(|row| &row.sources).map(|origin| origin.file.as_str()).collect()
-    }
-
     /// Takes in the rows of one file of `account`. A row that is surely a
     /// transaction the table has fills in what that one lacks; any other row
     /// is added, with `maybe_same_as` set if it may be one the table has.
@@ -608,31 +674,43 @@ impl Table {
         mint: &mut dyn FnMut() -> TransactionId,
     ) -> Reading {
         let mut reading = Reading::default();
-        let mut rows: Vec<&BankTransaction> = rows.iter().collect();
-        rows.sort_by_key(|row| (row.booked, row.time, row.order_hint));
+        // Each row with its place within its day in this file.
+        let mut in_file_order: Vec<&BankTransaction> = rows.iter().collect();
+        in_file_order.sort_by_key(|row| (row.booked, row.order_hint));
+        let mut rows: Vec<(&BankTransaction, Place)> = Vec::with_capacity(in_file_order.len());
+        for day in in_file_order.chunk_by(|a, b| a.booked == b.booked) {
+            let of = u32::try_from(day.len()).unwrap_or(u32::MAX);
+            rows.extend(day.iter().zip(1..).map(|(row, nth)| (*row, Place { nth, of })));
+        }
+        rows.sort_by_key(|(row, _)| (row.booked, row.time, row.order_hint));
         // Rows of the table that a row of this file has been taken for, or
         // that this file added.
         let mut taken: BTreeSet<TransactionId> = BTreeSet::new();
         let mut unmatched = Vec::new();
-        for row in rows {
+        for (row, place) in rows {
             if let Some(id) = self.read_before(account, row) {
+                // Nothing of it is compared again. What a row that was read
+                // before this was kept may lack is filled in.
+                if let Some(stored) = self.rows.get_mut(&id) {
+                    stored.absorb(&Stored { place: Some(place), ..Stored::new(id.clone(), account, row) });
+                }
                 taken.insert(id);
                 reading.matched += 1;
             } else if let Some(id) = self.surely(account, row, &taken) {
-                self.fill(&id, row, &mut reading.conflicts);
+                self.fill(&id, row, place, &mut reading.conflicts);
                 taken.insert(id);
                 reading.matched += 1;
             } else {
-                unmatched.push(row);
+                unmatched.push((row, place));
             }
         }
-        for row in unmatched {
+        for (row, place) in unmatched {
             let other = self.candidates(account, row, &taken).first().map(|stored| stored.id.clone());
             let mut id = mint();
             while self.rows.contains_key(&id) {
                 id = mint();
             }
-            let mut stored = Stored::new(id.clone(), account, row);
+            let mut stored = Stored { place: Some(place), ..Stored::new(id.clone(), account, row) };
             stored.maybe_same_as.clone_from(&other);
             self.rows.insert(id.clone(), stored);
             taken.insert(id.clone());
@@ -684,18 +762,24 @@ impl Table {
         candidates
     }
 
-    /// Fills in what the transaction `id` lacks from `row`, a copy of it.
-    /// What it has stays, and where the copy says something else, the
-    /// transaction notes the copy and `said` gets a line for each column.
-    fn fill(&mut self, id: &TransactionId, row: &BankTransaction, said: &mut Vec<String>) {
+    /// Fills in what the transaction `id` lacks from `row`, a copy of it
+    /// with `place` in its file. What it has stays, and where the copy says
+    /// something else, the transaction notes the copy and `said` gets a line
+    /// for each column.
+    fn fill(&mut self, id: &TransactionId, row: &BankTransaction, place: Place, said: &mut Vec<String>) {
         let Some(stored) = self.rows.get_mut(id) else { return };
-        let copy = stored.read_as(row);
+        let copy = Stored { place: Some(place), ..stored.read_as(row) };
         let differences = stored.differences(&copy);
         if !differences.is_empty() {
             let from = row.origin();
-            said.extend(differences.iter().map(|(_, says)| format!("{}: {says} in {}", stored.short(), place(from))));
-            let columns = differences.iter().map(|(column, _)| (*column).to_owned()).collect();
-            stored.conflicts.push(Conflict { place: from.clone(), columns });
+            said.extend(
+                differences.iter().map(|(_, says)| format!("{}: {says} in {}", stored.short(), self::place(from))),
+            );
+            let says = differences
+                .iter()
+                .map(|(column, _)| ((*column).to_owned(), copy.cell(column).unwrap_or_default()))
+                .collect();
+            stored.conflicts.push(Conflict { place: from.clone(), says });
         }
         stored.absorb(&copy);
         for origin in &row.origins {
@@ -703,5 +787,106 @@ impl Table {
                 stored.sources.push(origin.clone());
             }
         }
+    }
+}
+
+/// A raw file that has been read into the store, with what it says as a
+/// whole: when it was taken, and the balance the bank reported in it, if any.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileRead {
+    /// Its path relative to `data/`.
+    pub file: String,
+    /// The source it belongs to.
+    pub account: String,
+    /// When it was exported or fetched, if it says.
+    pub exported: Option<Date>,
+    /// A balance the bank reported at the end of a date.
+    pub balance: Option<(Date, Decimal)>,
+}
+
+const FILE_COLUMNS: [&str; 5] = ["file", "account", "exported", "balance_date", "balance"];
+
+/// The raw files that have been read into the store, by path. A file is
+/// recorded once, when it's read, and its line stays as it is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Files {
+    files: BTreeMap<String, FileRead>,
+}
+
+impl Files {
+    /// Reads the files' table from its text.
+    pub fn parse(text: &str) -> Result<Files> {
+        let mut reader = csv::ReaderBuilder::new().from_reader(text.as_bytes());
+        let header = reader.headers().context("the files' first line")?;
+        if !header.iter().eq(FILE_COLUMNS) {
+            bail!("the files' columns are {:?}, not {FILE_COLUMNS:?}", header.iter().collect::<Vec<_>>());
+        }
+        let mut files = BTreeMap::new();
+        for (i, record) in reader.records().enumerate() {
+            let line = i + 2;
+            let said = || format!("line {line} of the files");
+            let record = record.with_context(said)?;
+            let cells: Vec<&str> = record.iter().collect();
+            let [file, account, exported, balance_date, balance] = cells.as_slice() else {
+                bail!("{} has {} cells", said(), cells.len());
+            };
+            if file.is_empty() || account.is_empty() {
+                bail!("{}: a file has a path and an account", said());
+            }
+            let balance = match (
+                parsed(balance_date, date_of).with_context(said)?,
+                parsed(balance, parse_plain).with_context(said)?,
+            ) {
+                (Some(date), Some(balance)) => Some((date, balance)),
+                (None, None) => None,
+                _ => bail!("{}: a balance has a date, and the other way round", said()),
+            };
+            let read = FileRead {
+                file: (*file).to_owned(),
+                account: (*account).to_owned(),
+                exported: parsed(exported, date_of).with_context(said)?,
+                balance,
+            };
+            if files.insert(read.file.clone(), read).is_some() {
+                bail!("{}: {file} is there twice", said());
+            }
+        }
+        Ok(Files { files })
+    }
+
+    /// The files' table as text: one line per file, sorted by path.
+    pub fn write(&self) -> Result<String> {
+        let mut writer = csv::Writer::from_writer(Vec::new());
+        writer.write_record(FILE_COLUMNS)?;
+        for read in self.files.values() {
+            writer.write_record([
+                read.file.clone(),
+                read.account.clone(),
+                written(read.exported.as_ref(), Date::to_string),
+                written(read.balance.as_ref(), |(date, _)| date.to_string()),
+                written(read.balance.as_ref(), |(_, balance)| canonical(*balance)),
+            ])?;
+        }
+        let bytes = writer.into_inner().map_err(|e| anyhow::anyhow!("writing the files: {e}"))?;
+        String::from_utf8(bytes).context("the files' table is text")
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// Whether the file at this path has been read.
+    pub fn has(&self, file: &str) -> bool {
+        self.files.contains_key(file)
+    }
+
+    /// Records a file that has been read. One that is recorded stays as it is.
+    pub fn record(&mut self, read: FileRead) {
+        self.files.entry(read.file.clone()).or_insert(read);
+    }
+
+    /// The files of `account` that have been read, by path.
+    pub fn of<'a>(&'a self, account: &'a str) -> impl Iterator<Item = &'a FileRead> {
+        self.files.values().filter(move |read| read.account == account)
     }
 }

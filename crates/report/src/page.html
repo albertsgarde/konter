@@ -60,6 +60,8 @@ __SITE_CSS__
   aside li .date { color: var(--muted); }
   aside li .amt { text-align: right; font-variant-numeric: tabular-nums; }
   aside li .meta { grid-column: 2 / 4; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  aside li .unsettled { margin-left: 8px; font-size: 12px; color: var(--warn); text-decoration: none; white-space: nowrap; }
+  aside li .unsettled:hover { text-decoration: underline; }
   aside .foot { padding: 10px 16px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; font-weight: 600; }
   .nothing { padding: 24px 16px; color: var(--muted); }
   footer { padding: 6px 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
@@ -377,6 +379,12 @@ document.getElementById("collapse").addEventListener("click", () => {
 });
 
 // ── Transactions panel ──────────────────────────────────────────────
+// What the `unsettled` tag of a bank transaction says, in words.
+const UNSETTLED = {
+  "maybe-same-as": "Another row of the store may be this transaction, and counts as it until someone settles it. See the front page.",
+  "conflicts": "A copy of this transaction says something else than the store has. See the front page.",
+  "maybe-same-as+conflicts": "Another row of the store may be this transaction, and a copy of it says something else than the store has. See the front page.",
+};
 const panel = document.getElementById("panel");
 
 function monthTitle(key) {
@@ -405,7 +413,10 @@ function openPanel(path, key) {
     // A bare reference number says nothing; real bank text does.
     const bank = r.b && r.b !== r.p && !/^\d+$/.test(r.b) ? `bank: ${r.b}` : "";
     const meta = [sub, r.n || "", bank, r.id || ""].filter(Boolean).map(esc).join(" · ");
-    return `<li><span class="date">${r.d}</span><span>${esc(r.p)}</span>` +
+    // Something about the bank transaction isn't settled in the store: the
+    // front page has what.
+    const unsettled = r.u ? `<a class="unsettled" href="index.html" title="${esc(UNSETTLED[r.u] || r.u)}">⚠ not settled</a>` : "";
+    return `<li><span class="date">${r.d}</span><span>${esc(r.p)}${unsettled}</span>` +
       `<span class="amt ${r.v < 0 ? "neg" : ""}">${exact.format(r.v / 100)}</span>` +
       (meta ? `<span class="meta">${meta}</span>` : "") + `</li>`;
   }).join("") : `<li class="nothing">Nothing booked here.</li>`;

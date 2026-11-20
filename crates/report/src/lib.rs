@@ -96,6 +96,10 @@ pub struct Row {
     /// the money was set aside.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub x: bool,
+    /// What the store of transactions has unsettled about the bank
+    /// transaction (the `unsettled` tag), so the page can say so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub u: Option<String>,
 }
 
 /// A transaction in the books: what the pages read. Every amount is filled in.
@@ -183,6 +187,7 @@ pub fn rows(books: &[Transaction], side: Side, currency: &str, set_aside: &[SetA
             Some(serde_json::from_str::<String>(text).unwrap_or_else(|_| text.to_string()))
         });
         let id = tx.tag("bank-id");
+        let unsettled = tx.tag("unsettled");
         // A due date is generated, so it has no bank ID; payments do.
         let sub = if id.is_none() { tx.tag("subscription") } else { None };
         let pots: Vec<&SetAside> = tx.postings.iter().filter_map(|p| pot(&p.account)).collect();
@@ -219,6 +224,7 @@ pub fn rows(books: &[Transaction], side: Side, currency: &str, set_aside: &[SetA
                 id: id.clone(),
                 sub: sub.clone(),
                 x,
+                u: unsettled.clone(),
                 ..Row::default()
             });
         }
@@ -315,6 +321,25 @@ mod tests {
         );
         let error = rows(&books(), Side::Spending, "EUR", &[]).expect_err("another currency is refused").to_string();
         assert!(error.contains("not EUR"), "{error}");
+    }
+
+    /// A bank transaction that the store has something unsettled about says
+    /// so on each of its rows, for the page to show.
+    #[test]
+    fn carries_what_is_unsettled_about_a_transaction() {
+        let unsettled = tx(
+            "2026-10-12",
+            "Rejsekort",
+            &["bank-id:3f2b8c1e-5d4a-4f6b-9c7d-0a1b2c3d4e5f", "unsettled:maybe-same-as"],
+            &[],
+            &[("assets:bank:nordea:spending", -3600), ("expenses:transport:rejsekort", 3600)],
+        );
+        let found = rows(&[unsettled, books().remove(1)], Side::Spending, "DKK", &[]).expect("the rows are made");
+        let marks: Vec<Option<&str>> = found.iter().map(|row| row.u.as_deref()).collect();
+        assert_eq!(marks, [Some("maybe-same-as"), None]);
+        let page = render(Side::Spending, &found, "2026-10-31", "DKK");
+        assert!(page.contains(r#""u":"maybe-same-as""#), "{page}");
+        assert_eq!(page.matches(r#""u":"#).count(), 1);
     }
 
     #[test]

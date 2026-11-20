@@ -41,7 +41,8 @@ fn explain_shows_a_transaction_and_where_it_was_read_from() {
     for line in [
         "00000000-0000-4000-8000-000000000008  (bank:a)",
         "description   \"Top up\"",
-        "raw (nordea-csv):",
+        "raw:",
+        "Beskrivelse     \"Top up\"",
         "data/nordea/1234567890/Konto 1234567890 - 2026-01-31 10.00.00.csv:3",
     ] {
         assert!(text.contains(line), "{line}\n{text}");

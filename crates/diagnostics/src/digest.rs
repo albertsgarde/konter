@@ -87,6 +87,9 @@ impl Digest<'_> {
                 if let Some(trip) = item.trip {
                     more.push(format!("during the {} trip", trip.name));
                 }
+                if t.unsettled.is_some() {
+                    more.push("not settled in the store".into());
+                }
                 let _ = writeln!(out, "   {}", more.join(" · "));
             }
         }
@@ -123,6 +126,7 @@ impl Digest<'_> {
                     "original_currency": t.original_currency,
                     "description": t.description,
                     "counterparty_name": t.counterparty_name,
+                    "unsettled": t.unsettled,
                     "trip": item.trip.map(|tr| json!({
                         "name": tr.name,
                         "account": tr.account,

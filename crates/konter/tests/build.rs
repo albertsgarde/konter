@@ -182,7 +182,6 @@ fn duplicates_across_rules_files_name_both_files() {
 /// balance is worked back from the balance the bank reported.
 #[test]
 fn enable_banking_beside_an_export_and_snapshots() {
-    use konter_engine::config::Format;
     let (repo, config) = fixture("eb");
     let build = books::build(&repo, &config, date(2026, 2, 5)).expect("the fixture builds");
     let text = build.findings.render(true);
@@ -192,15 +191,15 @@ fn enable_banking_beside_an_export_and_snapshots() {
     let a = &build.loaded.sources["bank:a"];
     assert_eq!(a.txs.len(), 10);
     assert_eq!(a.txs[0].id, "00000000-0000-4000-8000-000000000001");
-    assert_eq!(a.txs[0].format, Some(Format::NordeaCsv));
+    // Its original fields are the export's, the first place it was read from.
+    assert!(a.txs[0].raw.contains_key("Beskrivelse"), "{:?}", a.txs[0].raw);
     let fetched: Vec<_> = a.txs.iter().filter(|t| t.bank_ref.is_some()).collect();
     assert_eq!(fetched.len(), 5);
     let (only, both) = fetched.split_last().expect("five of them");
-    assert!(
-        both.iter().all(|t| t.origins.len() == 2 && t.balance_after.is_some() && t.format == Some(Format::NordeaCsv))
-    );
+    assert!(both.iter().all(|t| t.origins.len() == 2 && t.balance_after.is_some() && t.raw.contains_key("Saldo")));
     assert_eq!(both[2].counterparty.as_deref(), Some("DK0000000000000555"));
-    assert_eq!((only.booked, only.format, only.balance_after), (date(2026, 2, 2), Some(Format::EnableBanking), None));
+    assert_eq!((only.booked, only.balance_after), (date(2026, 2, 2), None));
+    assert!(only.raw.contains_key("entry_reference"), "{:?}", only.raw);
     // Opening balances worked back from the bank's reported balance.
     assert_eq!(a.opening, Some(rust_decimal::Decimal::from(1050)));
     assert_eq!(build.loaded.sources["other:c"].opening, Some(rust_decimal::Decimal::from(500)));

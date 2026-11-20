@@ -1,5 +1,5 @@
-//! A source's transactions from the store's table (docs/spec.md §4), ready
-//! for the books:
+//! A source's transactions from the store (docs/spec.md §4), ready for the
+//! books:
 //!
 //! 1. take the source's transactions from the table, leaving out rows from
 //!    before its start, rows joined to another, and rows we aren't sure of,
@@ -7,21 +7,19 @@
 //! 2. report transactions that a file covering their date is missing,
 //! 3. order them so the running balance chains, reporting breaks.
 //!
-//! The table says which transactions there are and what each one's ID is.
-//! The raw files are where its rows came from: they give a transaction's
-//! original fields and its place within its day, and say how far the data
-//! reaches.
+//! Everything comes from the store: the table says which transactions there
+//! are, and the files' table how far the data reaches and what balances the
+//! bank reported. The raw files aren't looked at.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use jiff::civil::Date;
 use rust_decimal::Decimal;
 
-use super::RawFile;
 use super::chain::{in_chain_order, short};
 use crate::findings::Findings;
-use crate::model::{BankTransaction, Origin};
-use crate::store::{Stored, Table};
+use crate::model::BankTransaction;
+use crate::store::{Files, Stored, Table};
 
 /// Summary of one raw file.
 #[derive(Clone, Debug)]
@@ -87,39 +85,25 @@ impl SourceData {
     }
 }
 
-/// A raw row, and how many rows its file has on its day.
-type Copy<'a> = (&'a BankTransaction, usize);
-
-/// The transaction of `name` that the table's row `stored` is, with what its
-/// copies in the raw files add. `others`: the rows that count as it.
-fn transaction(
-    name: &str,
-    stored: &Stored,
-    others: &[&Stored],
-    copies: &BTreeMap<&Origin, Copy<'_>>,
-) -> BankTransaction {
+/// The transaction of `name` that the table's row `stored` is. `others`: the
+/// rows that count as it, which a person has yet to settle or has joined.
+fn transaction(name: &str, stored: &Stored, others: &[&Stored]) -> BankTransaction {
     let mut origins = stored.sources.clone();
     for origin in others.iter().flat_map(|other| &other.sources) {
         if !origins.contains(origin) {
             origins.push(origin.clone());
         }
     }
-    let found: Vec<Copy<'_>> = origins.iter().filter_map(|origin| copies.get(origin).copied()).collect();
-    // Where in a file a row is can only be compared within that file. So a
-    // transaction takes its place from the file with the most rows on its
-    // day: every export of a day starts at its beginning, so that one has
-    // all of them.
-    let mut place: Option<Copy<'_>> = None;
-    for copy in &found {
-        if place.is_none_or(|(_, most)| copy.1 > most) {
-            place = Some(*copy);
-        }
+    let mut unsettled = Vec::new();
+    if others.iter().any(|other| other.same_as.is_none()) {
+        unsettled.push("maybe-same-as");
     }
-    let first = found.first().map(|(copy, _)| *copy);
+    if !stored.conflicts.is_empty() {
+        unsettled.push("conflicts");
+    }
     BankTransaction {
         id: stored.id.to_string(),
         source: name.to_owned(),
-        format: first.and_then(|copy| copy.format),
         booked: stored.date,
         time: stored.time,
         value_date: stored.value_date,
@@ -133,9 +117,10 @@ fn transaction(
         counterparty_name: stored.counterparty_name.clone(),
         balance_after: stored.balance,
         bank_ref: stored.reference.clone(),
-        raw: first.map(|copy| copy.raw.clone()).unwrap_or_default(),
+        raw: stored.raw.clone(),
         origins,
-        order_hint: place.map_or(0, |(copy, _)| copy.order_hint),
+        order_hint: stored.place.map_or(0, |place| i64::from(place.nth)),
+        unsettled: (!unsettled.is_empty()).then(|| unsettled.join("+")),
     }
 }
 
@@ -157,51 +142,8 @@ fn missing(txs: &[BankTransaction], files: &[FileSummary]) -> Vec<String> {
     out
 }
 
-/// The transactions of source `name` that the table has, from `start` on.
-/// `files`: the source's raw files, parsed.
-pub fn from_table(
-    name: &str,
-    start: Date,
-    table: &Table,
-    mut files: Vec<RawFile>,
-    findings: &mut Findings,
-) -> SourceData {
-    files.sort_by(|a, b| a.rel.cmp(&b.rel));
-    let read = table.files();
-    let unread: Vec<&str> =
-        files.iter().filter(|f| !f.rows.is_empty() && !read.contains(f.rel.as_str())).map(|f| f.rel.as_str()).collect();
-    if !unread.is_empty() {
-        findings
-            .error("store", format!("{name}: {} raw files haven't been read into the table", unread.len()))
-            .details(unread.iter().map(|rel| format!("data/{rel}")))
-            .detail("→ the books are built without their rows; `konter store` reads the ones data/MANIFEST lists");
-    }
-
-    let mut copies: BTreeMap<&Origin, Copy<'_>> = BTreeMap::new();
-    let mut summaries = Vec::new();
-    let mut snapshots = Vec::new();
-    for file in &files {
-        let mut on_day: BTreeMap<Date, usize> = BTreeMap::new();
-        for row in &file.rows {
-            *on_day.entry(row.booked).or_default() += 1;
-        }
-        for row in &file.rows {
-            for origin in &row.origins {
-                copies.insert(origin, (row, on_day[&row.booked]));
-            }
-        }
-        let rows = || file.rows.iter().filter(|t| t.booked >= start);
-        summaries.push(FileSummary {
-            rel: file.rel.clone(),
-            count: rows().count(),
-            first: rows().map(|t| t.booked).min(),
-            last: rows().map(|t| t.booked).max(),
-            exported: file.exported,
-        });
-        snapshots.extend(file.snapshots.iter().filter(|s| s.date >= start).cloned());
-    }
-    snapshots.sort_by(|a, b| (a.date, &a.file).cmp(&(b.date, &b.file)));
-
+/// The transactions of source `name` that the store has, from `start` on.
+pub fn from_table(name: &str, start: Date, table: &Table, files: &Files, findings: &mut Findings) -> SourceData {
     // Step 1. The rows that count as another, by the row they count as.
     let mut others: BTreeMap<&crate::store::TransactionId, Vec<&Stored>> = BTreeMap::new();
     let mut aliases = BTreeMap::new();
@@ -228,9 +170,39 @@ pub fn from_table(
             continue;
         }
         let others = others.get(&row.id).map(Vec::as_slice).unwrap_or_default();
-        txs.push(transaction(name, row, others, &copies));
+        txs.push(transaction(name, row, others));
     }
     txs.sort_by(|a, b| (a.booked, a.time, a.order_hint, &a.id).cmp(&(b.booked, b.time, b.order_hint, &b.id)));
+
+    // The source's files: the ones recorded as read, and any other that a
+    // transaction names. A balance recorded beside an export has a line of
+    // its own among the files, and isn't a file of transactions.
+    let mut rels: BTreeSet<&str> =
+        files.of(name).map(|read| read.file.as_str()).filter(|rel| !super::is_sidecar(rel)).collect();
+    rels.extend(txs.iter().flat_map(|t| &t.origins).map(|origin| origin.file.as_str()));
+    let exported: BTreeMap<&str, Date> =
+        files.of(name).filter_map(|read| Some((read.file.as_str(), read.exported?))).collect();
+    let summaries: Vec<FileSummary> = rels
+        .into_iter()
+        .map(|rel| {
+            let dates = || txs.iter().filter(|t| t.origins.iter().any(|origin| origin.file == rel)).map(|t| t.booked);
+            FileSummary {
+                rel: rel.to_owned(),
+                count: dates().count(),
+                first: dates().min(),
+                last: dates().max(),
+                exported: exported.get(rel).copied(),
+            }
+        })
+        .collect();
+    let mut snapshots: Vec<Snapshot> = files
+        .of(name)
+        .filter_map(|read| {
+            let (date, balance) = read.balance?;
+            (date >= start).then(|| Snapshot { date, balance, file: read.file.clone() })
+        })
+        .collect();
+    snapshots.sort_by(|a, b| (a.date, &a.file).cmp(&(b.date, &b.file)));
 
     let conflicts = missing(&txs, &summaries);
     if !conflicts.is_empty() {

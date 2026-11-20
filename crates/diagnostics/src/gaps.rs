@@ -312,6 +312,9 @@ fn notes(
             (n, _) => format!("later ({} of {n})", g.later),
         });
     }
+    if g.txs.iter().any(|t| t.unsettled.is_some()) {
+        parts.push("not settled".into());
+    }
     parts.extend(g.transfers.iter().map(|(other, n)| {
         if *n == g.txs.len() { format!("↔ {other}") } else { format!("↔ {other} ({n} of {})", g.txs.len()) }
     }));

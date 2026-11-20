@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use crate::config::{Config, Format};
 use crate::findings::Findings;
 use crate::model::BankTransaction;
-use crate::store::Table;
+use crate::store::{FileRead, Files, Reading, Table, TransactionId};
 
 pub use stored::SourceData;
 
@@ -154,20 +154,44 @@ fn dir_of(rel: &str) -> &str {
     rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
 }
 
-/// The transactions of one imported source that the table has, and reports
-/// what came of it. `raw`: the source's parsed raw files.
-pub fn stored_source(
-    config: &Config,
+/// Reads one raw file of source `name` into the store: its rows into the
+/// table (see [`Table::read`]), and the file among the files that have been
+/// read, with when it was taken and the balance the bank reported. A balance
+/// recorded beside an export is a file of its own there.
+pub fn read_into(
+    table: &mut Table,
+    files: &mut Files,
     name: &str,
-    table: &Table,
-    raw: Vec<RawFile>,
-    findings: &mut Findings,
-) -> SourceData {
+    file: &RawFile,
+    mint: &mut dyn FnMut() -> TransactionId,
+) -> Reading {
+    let reading = table.read(name, &file.rows, mint);
+    let balance_in = |rel: &str| file.snapshots.iter().find(|s| s.file == rel).map(|s| (s.date, s.balance));
+    files.record(FileRead {
+        file: file.rel.clone(),
+        account: name.to_owned(),
+        exported: file.exported,
+        balance: balance_in(&file.rel),
+    });
+    for beside in file.snapshots.iter().filter(|s| s.file != file.rel) {
+        files.record(FileRead {
+            file: beside.file.clone(),
+            account: name.to_owned(),
+            exported: None,
+            balance: Some((beside.date, beside.balance)),
+        });
+    }
+    reading
+}
+
+/// The transactions of one imported source that the store has, and reports
+/// what came of it.
+pub fn stored_source(config: &Config, name: &str, table: &Table, files: &Files, findings: &mut Findings) -> SourceData {
     let source = &config.sources[name];
-    if raw.is_empty() {
+    if files.of(name).next().is_none() {
         findings.warn("data", format!("{name}: no raw data yet"));
     }
-    let data = stored::from_table(name, config.source_start(source), table, raw, findings);
+    let data = stored::from_table(name, config.source_start(source), table, files, findings);
     summarize(name, &data, findings);
     data
 }

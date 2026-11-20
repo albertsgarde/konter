@@ -1,6 +1,7 @@
 //! Reading the books' inputs from the repository: the config, the rules, the
-//! store of transactions with the raw bank data, and the accounts and transactions written by hand. What's done with them is the
-//! engine's business; this module only reads.
+//! store of transactions, and the accounts and transactions written by hand. What's done with them is the
+//! engine's business; this module only reads. A build reads none of the raw
+//! bank data: the commands that bring the store up to date do (`raw_file`).
 
 use std::path::Path;
 
@@ -13,7 +14,6 @@ use konter_engine::findings::Findings;
 use konter_engine::manual::{self, Manual};
 use konter_engine::rules::Rules;
 use konter_engine::sources::{self, Loaded, RawFile, SourceData};
-use konter_engine::store::Table;
 
 use crate::store;
 
@@ -61,48 +61,20 @@ pub fn fetches(repo: &Repo, config: &Config, name: &str) -> Result<Vec<RawFile>>
     fetched.map(|rel| raw_file(repo, config, name, rel)).collect()
 }
 
-/// One imported source's transactions, from the store's table and the
-/// source's raw files.
+/// One imported source's transactions, as the store has them.
 pub fn source(repo: &Repo, config: &Config, name: &str, findings: &mut Findings) -> Result<SourceData> {
-    Ok(source_among(repo, config, name, &store::table(repo)?, &manifest::raw_files(repo)?, findings))
+    let (table, files) = store::tables(repo)?;
+    Ok(sources::stored_source(config, name, &table, &files, findings))
 }
 
-/// One imported source's transactions, from `table` and the source's raw
-/// files, picked from `rels`: every raw file there is.
-fn source_among(
-    repo: &Repo,
-    config: &Config,
-    name: &str,
-    table: &Table,
-    rels: &[String],
-    findings: &mut Findings,
-) -> SourceData {
-    let mut raw = Vec::new();
-    for rel in sources::files_of(config, name, rels) {
-        match raw_file(repo, config, name, rel) {
-            Ok(file) => raw.push(file),
-            Err(e) => {
-                findings.error("parse", format!("{e:#}"));
-            }
-        }
-    }
-    sources::stored_source(config, name, table, raw, findings)
-}
-
-/// Verifies the manifest, reads the store's table and parses every raw
-/// file, and takes each source's transactions from them.
+/// Every imported source's transactions, as the store has them. Nothing in
+/// `data/` is looked at: the store is where its rows have been read to.
 pub fn all_sources(repo: &Repo, config: &Config, findings: &mut Findings) -> Result<Loaded> {
-    manifest::verify(repo, findings)?;
-    let table = store::table(repo)?;
-    let rels = manifest::raw_files(repo)?;
-    let orphans = sources::orphans(config, &rels);
-    if !orphans.is_empty() {
-        findings.error("data", "raw files in a directory that belongs to no imported source").details(orphans);
-    }
+    let (table, files) = store::tables(repo)?;
     let mut loaded = Loaded { sources: Default::default() };
     for (name, source_config) in &config.sources {
         if source_config.imported() {
-            loaded.sources.insert(name.clone(), source_among(repo, config, name, &table, &rels, findings));
+            loaded.sources.insert(name.clone(), sources::stored_source(config, name, &table, &files, findings));
         }
     }
     Ok(loaded)

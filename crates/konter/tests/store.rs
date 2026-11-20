@@ -140,7 +140,18 @@ fn the_table_follows_the_raw_files_and_ids_stay() {
         .expect("the folder is read")
         .map(|entry| entry.expect("an entry").file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(files, ["bank-transactions.csv"]);
+    let mut files = files;
+    files.sort();
+    assert_eq!(files, ["bank-transactions.csv", "files.csv"]);
+    // The files' table has each raw file that was read, once.
+    let read = std::fs::read_to_string(root.join("store/files.csv")).expect("the files' table is read");
+    assert_eq!(
+        read,
+        "file,account,exported,balance_date,balance\n\
+         lunar/555/statement.csv,lunar:b,,,\n\
+         nordea/1234567890/Konto 1234567890 - 2026-01-31 10.00.00.csv,bank:a,2026-01-31,,\n\
+         nordea/1234567890/Konto 1234567890 - 2026-02-05 10.00.00.csv,bank:a,2026-02-05,,\n"
+    );
 
     // The front page says how much money is unmapped and that the table has
     // nothing to settle. The fixture's pins name the IDs of the fixture's
@@ -180,7 +191,7 @@ fn what_the_reader_isnt_sure_of_is_marked_and_warned_of() {
         format!(
             "{moved} lunar:b 2026-01-11 -30 \"Coffee Shop\" may be {coffee} lunar:b 2026-01-10 -30 \"Coffee Shop\""
         ),
-        "→ each was added as a transaction of its own, with the other's ID in `maybe_same_as`".to_owned(),
+        "→ each was added as a row of its own, with the other's ID in `maybe_same_as`".to_owned(),
         "differences between a copy and what store/bank-transactions.csv has: 1".to_owned(),
         "lunar:b 2026-01-29 500 \"Overførsel\": text is \"Overførsel\" in the table and \"Transfer\" in \
          lunar/555/later.csv:2"
@@ -190,15 +201,20 @@ fn what_the_reader_isnt_sure_of_is_marked_and_warned_of() {
         assert!(said.contains(&line), "{line}\n{said}");
     }
     let row = |id: &str| after.lines().find(|line| line.starts_with(id)).expect("the row is there").to_owned();
-    assert!(row(moved).contains(&format!(",{coffee},,lunar/555/later.csv:3")), "{}", row(moved));
     assert!(
-        row(transfer).contains(",Overførsel,") && row(transfer).contains(",lunar/555/later.csv:2=text,"),
+        row(moved).contains(&format!(",{coffee},,\"{{")) && row(moved).ends_with(",lunar/555/later.csv:3"),
+        "{}",
+        row(moved)
+    );
+    assert!(
+        row(transfer).contains(",Overførsel,")
+            && row(transfer).contains(r#"[{""at"":""lunar/555/later.csv:2"",""says"":{""text"":""Transfer""}}]"#),
         "{}",
         row(transfer)
     );
 
     // The front page has both: the two rows that may be one transaction, and
-    // what the table has beside what the copy says, read from the copy's file.
+    // what the table has beside what the copy says.
     let page = front_page(&root);
     for line in [
         "<h3>May be a transaction the table already had (1)</h3>".to_owned(),
@@ -223,11 +239,39 @@ fn what_the_reader_isnt_sure_of_is_marked_and_warned_of() {
         assert!(page.contains(&line), "{line}\n{page}");
     }
     assert!(!page.contains("Nothing to settle"), "{page}");
-    // The table doesn't keep what a copy says, so a copy whose file can't be
-    // read any more is listed without it.
+    // The page comes from the store alone: the copy's file can go, and it
+    // says the same.
     std::fs::write(root.join("data/lunar/555/later.csv"), "no longer an export\n").expect("the file is written");
-    let page = front_page(&root);
-    assert!(page.contains("<td>Overførsel</td><td><span class=\"muted\">can't be read any more</span></td>"), "{page}");
+    assert_eq!(front_page(&root), page);
+
+    // The transfer is in the books with what it had, marked as not settled:
+    // in the journal, and so wherever it's shown.
+    let journal = std::fs::read_to_string(root.join("ledger/generated.journal")).expect("the journal is read");
+    let entry = journal.lines().find(|line| line.contains(&format!("bank-id:{transfer}"))).expect("the transfer");
+    assert!(entry.contains("unsettled:conflicts"), "{entry}");
+    let entry = journal.lines().find(|line| line.contains(&format!("bank-id:{coffee}"))).expect("the coffee");
+    assert!(entry.contains("unsettled:maybe-same-as"), "{entry}");
+    assert!(!journal.contains(&format!("bank-id:{moved}")), "{journal}");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_konter"));
+    let listed = command.arg("--root").arg(&root).arg("list").output().expect("konter runs");
+    let listed = text(&listed);
+    let line = listed.lines().find(|line| line.starts_with(coffee.as_str())).expect("the coffee");
+    assert!(line.ends_with("Coffee Shop  ⚠ not settled (maybe-same-as)"), "{line}");
+    assert_eq!(listed.matches("not settled").count(), 2, "{listed}");
+    // The gaps report notes it on the coffee, which no rule maps, and on
+    // nothing else; the page does too.
+    let mut command = Command::new(env!("CARGO_BIN_EXE_konter"));
+    let gaps = text(&command.arg("--root").arg(&root).arg("gaps").output().expect("konter runs"));
+    let noted: Vec<&str> = gaps.lines().filter(|line| line.contains("not settled")).collect();
+    assert!(matches!(noted.as_slice(), [line] if line.contains("Coffee Shop")), "{gaps}");
+    let page = std::fs::read_to_string(root.join("build/gaps.html")).expect("the gaps page is read");
+    let noted: Vec<&str> = page.lines().filter(|line| line.contains("not settled")).collect();
+    assert!(noted.iter().all(|line| line.contains("Coffee Shop")) && !noted.is_empty(), "{noted:?}");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_konter"));
+    let explained = command.arg("--root").arg(&root).args(["explain", moved]).output().expect("konter runs");
+    let explained = text(&explained);
+    assert!(explained.starts_with(&format!("{coffee}  (lunar:b)")), "{explained}");
+    assert!(explained.contains("not settled   maybe-same-as (the site's front page has what)"), "{explained}");
 }
 
 /// The raw file is safe in data/ before the table is looked at, so a table
@@ -242,7 +286,9 @@ fn a_table_that_cant_be_read_is_reported_and_left_alone() {
     let run = add(&root, &later_export(&root), None);
     assert_eq!(run.status.code(), Some(1), "{}", text(&run));
     assert!(
-        text(&run).contains("store/bank-transactions.csv wasn't brought up to date: reading store/bank-transactions.csv: the table's columns are"),
+        text(&run).contains(
+            "the store wasn't brought up to date: reading store/bank-transactions.csv: the table's columns are"
+        ),
         "{}",
         text(&run)
     );
@@ -267,7 +313,7 @@ fn a_raw_file_that_cant_be_parsed_is_left_out_of_the_table() {
     let run = add(&root, &root.join(NORDEA_DIR).join("Konto 1234567890 - 2026-01-31 10.00.00.csv"), None);
     let said = text(&run);
     assert!(said.contains("store/bank-transactions.csv: 9 transactions, 9 of them new, from 1 files"), "{said}");
-    assert!(said.contains("raw files that couldn't be read into store/bank-transactions.csv: 1"), "{said}");
+    assert!(said.contains("raw files that couldn't be read into the store: 1"), "{said}");
     assert!(said.contains("lunar/555/statement.csv"), "{said}");
     assert!(!table(&root).contains("lunar:b"));
 }
@@ -290,31 +336,50 @@ fn a_row_we_arent_sure_of_alone_is_listed() {
     assert!(!page.contains("Nothing to settle") && !page.contains("Copies that say something else"), "{page}");
 }
 
-/// The books are built from the table. A raw file it hasn't read is an
-/// error that names the file, with the books built without its rows, and
-/// `konter store` reads it.
+/// The books are built from the store alone, so a build says nothing about
+/// a raw file the store hasn't read: `konter verify` does, and `konter store`
+/// reads it.
 #[test]
-fn a_build_names_the_raw_files_the_table_hasnt_read() {
+fn verify_names_the_raw_files_the_store_hasnt_read() {
     let root = scratch("unread");
-    let built = build(&root);
-    assert_eq!(built.status.code(), Some(1), "{}", text(&built));
+    let konter = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_konter"));
+        text(&command.arg("--root").arg(&root).args(args).output().expect("konter runs"))
+    };
+    let built = text(&build(&root));
+    assert!(built.contains("bank:a: no raw data yet") && !built.contains("haven't been read"), "{built}");
+    let verified = konter(&["verify"]);
     for line in [
-        "bank:a: 1 raw files haven't been read into the table",
+        "2 raw files haven't been read into the store",
         "data/nordea/1234567890/Konto 1234567890 - 2026-01-31 10.00.00.csv",
-        "lunar:b: 1 raw files haven't been read into the table",
-        "→ the books are built without their rows; `konter store` reads the ones data/MANIFEST lists",
+        "data/lunar/555/statement.csv",
+        "→ the books are built without their rows; `konter store` reads them",
+        "2 raw files match data/MANIFEST",
     ] {
-        assert!(text(&built).contains(line), "{line}\n{}", text(&built));
+        assert!(verified.contains(line), "{line}\n{verified}");
     }
-    let mut command = Command::new(env!("CARGO_BIN_EXE_konter"));
-    let stored = command.arg("--root").arg(&root).arg("store").output().expect("konter runs");
-    assert!(stored.status.success(), "{}", text(&stored));
-    assert!(
-        text(&stored).contains("store/bank-transactions.csv: 11 transactions, 11 of them new, from 2 files"),
-        "{}",
-        text(&stored)
-    );
-    let built = build(&root);
-    assert!(!text(&built).contains("haven't been read"), "{}", text(&built));
-    assert!(text(&built).contains("bank:a: 9 transactions 2026-01-02 … 2026-01-30 from 1 files"), "{}", text(&built));
+    let stored = konter(&["store"]);
+    assert!(stored.contains("store/bank-transactions.csv: 11 transactions, 11 of them new, from 2 files"), "{stored}");
+    assert!(stored.contains("2 raw files match data/MANIFEST"), "{stored}");
+    let built = text(&build(&root));
+    assert!(built.contains("bank:a: 9 transactions 2026-01-02 … 2026-01-30 from 1 files"), "{built}");
+    assert!(!konter(&["verify"]).contains("haven't been read"));
+
+    // A balance written down beside an export later is read too, and a file
+    // in a folder that is no source's is named.
+    std::fs::write(root.join("data/lunar/555/statement.csv.balance.toml"), "date = 2026-01-29\nbalance = \"520.00\"\n")
+        .expect("the balance is written");
+    let manifest = root.join("data/MANIFEST");
+    let listed = std::fs::read_to_string(&manifest).expect("the manifest is read");
+    let hash = "9e3b7b0c0f6e8e4f0d5f3f0e8b7f6a5d4c3b2a190817263544536271809a0b1c";
+    std::fs::write(&manifest, format!("{hash}  lunar/555/statement.csv.balance.toml\n{listed}")).expect("it's written");
+    std::fs::create_dir_all(root.join("data/elsewhere")).expect("the folder is made");
+    std::fs::write(root.join("data/elsewhere/a.csv"), "x\n").expect("the file is written");
+    let verified = konter(&["verify"]);
+    assert!(verified.contains("1 raw files haven't been read into the store"), "{verified}");
+    assert!(verified.contains("raw files in a directory that belongs to no imported source"), "{verified}");
+    konter(&["store"]);
+    let read = std::fs::read_to_string(root.join("store/files.csv")).expect("the files' table is read");
+    assert!(read.contains("lunar/555/statement.csv.balance.toml,lunar:b,,2026-01-29,520\n"), "{read}");
+    assert!(!konter(&["verify"]).contains("haven't been read"));
 }

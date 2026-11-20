@@ -3,7 +3,6 @@
 
 #![allow(dead_code, reason = "each test binary uses its own part of this")]
 
-use std::collections::BTreeMap;
 use std::hash::{BuildHasher, DefaultHasher, Hash, Hasher, RandomState};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -15,7 +14,7 @@ use konter_engine::manual::Manual;
 use konter_engine::pipeline::{self, Build};
 use konter_engine::rules::Rules;
 use konter_engine::sources::{self, Loaded};
-use konter_engine::store::{Table, TransactionId};
+use konter_engine::store::{Files, Table, TransactionId};
 use rust_decimal::Decimal;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -105,25 +104,28 @@ pub fn load_settled(
     findings: &mut Findings,
     settle: impl FnOnce(&mut Table),
 ) -> Loaded {
-    let mut raw: BTreeMap<&str, Vec<sources::RawFile>> = BTreeMap::new();
-    for (name, source) in &config.sources {
-        if source.imported() {
-            raw.insert(name, Vec::new());
-        }
-    }
-    let (mut table, mut mint) = (Table::default(), ids());
-    for (source, rel, text) in files {
-        let file = sources::parse_raw(config, source, rel, text, None).expect("the test's bank file parses");
-        table.read(source, &file.rows, &mut mint);
-        raw.get_mut(source).expect("the file is for a source in the config").push(file);
-    }
-    settle(&mut table);
+    let (table, read) = stored(config, files, settle);
     Loaded {
-        sources: raw
-            .into_iter()
-            .map(|(name, files)| (name.to_string(), sources::stored_source(config, name, &table, files, findings)))
+        sources: config
+            .sources
+            .iter()
+            .filter(|(_, source)| source.imported())
+            .map(|(name, _)| (name.clone(), sources::stored_source(config, name, &table, &read, findings)))
             .collect(),
     }
+}
+
+/// A store that has read `files`, in the order given, and has then been
+/// changed by `settle`.
+pub fn stored(config: &Config, files: &[(&str, &str, &str)], settle: impl FnOnce(&mut Table)) -> (Table, Files) {
+    let (mut table, mut read, mut mint) = (Table::default(), Files::default(), ids());
+    for (source, rel, text) in files {
+        assert!(config.sources.contains_key(*source), "the file is for a source in the config");
+        let file = sources::parse_raw(config, source, rel, text, None).expect("the test's bank file parses");
+        sources::read_into(&mut table, &mut read, source, &file, &mut mint);
+    }
+    settle(&mut table);
+    (table, read)
 }
 
 /// A Nordea CSV export of account 1234567890, as the bank writes it (newest
