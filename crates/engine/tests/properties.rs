@@ -510,8 +510,9 @@ fn check_store(case: &Arrivals, may_be_unsure: bool) -> Result<(), String> {
     let mut table = Table::default();
     let mut given: BTreeMap<TransactionId, String> = BTreeMap::new();
     for (arrived, file) in case.parts.iter().enumerate() {
-        let reading = table.read(source, &rows_of(file), &mut mint);
-        if !(reading.unsure.is_empty() || may_be_unsure) || !reading.disagreements.is_empty() {
+        let reading =
+            table.read(source, &rows_of(file), &mut mint).map_err(|e| format!("reading {}: {e:#}", file.rel))?;
+        if !(reading.unsure.is_empty() || may_be_unsure) {
             return Err(format!("reading {} (file {} to arrive): {reading:?}", file.rel, arrived + 1));
         }
         for t in table.transactions() {

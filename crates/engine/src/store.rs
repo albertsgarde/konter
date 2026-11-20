@@ -6,7 +6,9 @@
 //! from them can change when more data arrives. Here a transaction gets its
 //! ID once, when it's first read, and keeps it. Reading a file reconciles its
 //! rows with the table ([`Table::read`]): a row that is a transaction the
-//! table has fills in what that one lacks, and any other row is added.
+//! table has fills in what that one lacks, and any other row is added. What
+//! the table has is never overwritten: a copy that says something else fails
+//! the read.
 //!
 //! Nothing builds from the table yet: the books still come from merging the
 //! raw files (`sources::merge`).
@@ -287,6 +289,23 @@ fn fill<T: Clone>(slot: &mut Option<T>, value: Option<&T>) {
     }
 }
 
+/// Fills `slot` from a copy's `value` if it's empty. A value that is there
+/// stays, and a copy that says something else is noted in `said`.
+fn settle<T: Clone + PartialEq + fmt::Debug>(
+    field: &str,
+    slot: &mut Option<T>,
+    value: Option<&T>,
+    said: &mut Vec<String>,
+) {
+    match (slot.as_ref(), value) {
+        (Some(has), Some(value)) if has != value => {
+            said.push(format!("{field} is {has:?} in the table and {value:?}"));
+        }
+        (None, Some(value)) => *slot = Some(value.clone()),
+        _ => {}
+    }
+}
+
 /// What reading a file did to the table.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Reading {
@@ -297,9 +316,6 @@ pub struct Reading {
     /// Rows added that may be a transaction the table already had: the new
     /// row's ID, and the other's. The new row has it as `maybe_same_as`.
     pub unsure: Vec<(TransactionId, TransactionId)>,
-    /// Where a copy says something else than the table about what a
-    /// transaction can't have two of. The table was left as it was.
-    pub disagreements: Vec<String>,
 }
 
 /// Every transaction, by ID.
@@ -440,15 +456,43 @@ impl Table {
     /// is added, with `maybe_same_as` set if it may be one the table has.
     /// `mint` gives a new ID each time it's called.
     ///
-    /// Sure means: read from the same place before; or the same bank
-    /// reference, day and amount; or the same day, amount and text, with
-    /// nothing both have that says otherwise. A file has a transaction once,
-    /// so no two of its rows are taken for the same one.
+    /// Sure means: the same bank reference, day and amount; or the same day,
+    /// amount and text, with nothing both have that says otherwise. A file
+    /// has a transaction once, so no two of its rows are taken for the same
+    /// one. A row that was read from the same place before is the row it
+    /// became then, and adds nothing.
+    ///
+    /// What the table has is never overwritten. If a copy says something
+    /// else than the table about a field both have, the read fails, naming
+    /// each such field, and the table is left as it was.
     pub fn read(
         &mut self,
         account: &str,
         rows: &[BankTransaction],
         mint: &mut dyn FnMut() -> TransactionId,
+    ) -> Result<Reading> {
+        let mut table = self.clone();
+        let mut said = Vec::new();
+        let reading = table.take_in(account, rows, mint, &mut said);
+        if !said.is_empty() {
+            bail!(
+                "{} copies say something else than the table, which was left as it was:\n  {}",
+                said.len(),
+                said.join("\n  ")
+            );
+        }
+        *self = table;
+        Ok(reading)
+    }
+
+    /// What [`Table::read`] does, noting in `said` where a copy says
+    /// something else than the table.
+    fn take_in(
+        &mut self,
+        account: &str,
+        rows: &[BankTransaction],
+        mint: &mut dyn FnMut() -> TransactionId,
+        said: &mut Vec<String>,
     ) -> Reading {
         let mut reading = Reading::default();
         let mut rows: Vec<&BankTransaction> = rows.iter().collect();
@@ -458,13 +502,15 @@ impl Table {
         let mut taken: BTreeSet<TransactionId> = BTreeSet::new();
         let mut unmatched = Vec::new();
         for row in rows {
-            match self.surely(account, row, &taken) {
-                Some(id) => {
-                    self.fill(&id, row, &mut reading);
-                    taken.insert(id);
-                    reading.matched += 1;
-                }
-                None => unmatched.push(row),
+            if let Some(id) = self.read_before(account, row) {
+                taken.insert(id);
+                reading.matched += 1;
+            } else if let Some(id) = self.surely(account, row, &taken) {
+                self.fill(&id, row, said);
+                taken.insert(id);
+                reading.matched += 1;
+            } else {
+                unmatched.push(row);
             }
         }
         for row in unmatched {
@@ -486,14 +532,18 @@ impl Table {
         reading
     }
 
+    /// The transaction that `row` became when its place in its file was read
+    /// before, or the one that has since been joined to.
+    fn read_before(&self, account: &str, row: &BankTransaction) -> Option<TransactionId> {
+        let stored = self
+            .rows
+            .values()
+            .find(|stored| stored.account == account && row.origins.iter().any(|o| stored.sources.contains(o)))?;
+        Some(self.resolve(&stored.id).unwrap_or(stored).id.clone())
+    }
+
     /// The transaction `row` surely is, if the table has it.
     fn surely(&self, account: &str, row: &BankTransaction, taken: &BTreeSet<TransactionId>) -> Option<TransactionId> {
-        let mine = |stored: &&Stored| stored.account == account;
-        let read_before =
-            self.rows.values().filter(mine).find(|stored| row.origins.iter().any(|o| stored.sources.contains(o)));
-        if let Some(stored) = read_before {
-            return Some(self.resolve(&stored.id).unwrap_or(stored).id.clone());
-        }
         let candidates = self.candidates(account, row, taken);
         let by_reference: Vec<&&Stored> =
             candidates.iter().filter(|stored| stored.has_reference_of(row) && stored.looks_like(row)).collect();
@@ -521,32 +571,25 @@ impl Table {
     }
 
     /// Fills in what the transaction `id` lacks from `row`, a copy of it.
-    /// What it has stays. Two copies may word a transaction differently, and
-    /// ones that disagree on the balance or the reference aren't taken for
-    /// copies, but they can still name another currency: that is reported.
-    fn fill(&mut self, id: &TransactionId, row: &BankTransaction, reading: &mut Reading) {
+    /// What it has stays, and where the copy says something else that is
+    /// noted in `said`.
+    fn fill(&mut self, id: &TransactionId, row: &BankTransaction, said: &mut Vec<String>) {
         let Some(stored) = self.rows.get_mut(id) else { return };
+        let short = stored.short();
+        let mut differs = Vec::new();
+        settle("the currency", &mut stored.currency, text_of(&row.currency).as_ref(), &mut differs);
+        settle("the text", &mut stored.text, text_of(&row.description).as_ref(), &mut differs);
+        settle("the counterparty's name", &mut stored.counterparty_name, row.counterparty_name.as_ref(), &mut differs);
+        settle("the counterparty", &mut stored.counterparty, row.counterparty.as_ref(), &mut differs);
+        settle("the balance", &mut stored.balance, row.balance_after.as_ref(), &mut differs);
+        settle("the reference", &mut stored.reference, row.bank_ref.as_ref(), &mut differs);
+        settle("the time of day", &mut stored.time, row.time.as_ref(), &mut differs);
+        settle("the value date", &mut stored.value_date, row.value_date.as_ref(), &mut differs);
+        settle("the transaction date", &mut stored.transaction_date, row.transaction_date.as_ref(), &mut differs);
+        settle("the original amount", &mut stored.original_amount, row.original_amount.as_ref(), &mut differs);
+        settle("the original currency", &mut stored.original_currency, row.original_currency.as_ref(), &mut differs);
         let file = row.origins.first().map_or("?", |o| o.file.as_str());
-        let mut disagree = |field: &str, table: String, copy: String| {
-            reading
-                .disagreements
-                .push(format!("{}: {field} is {table} in the table and {copy} in {file}", stored.short()));
-        };
-        let currency = text_of(&row.currency);
-        if !agree(stored.currency.as_ref(), currency.as_ref()) {
-            disagree("the currency", stored.currency.clone().unwrap_or_default(), row.currency.clone());
-        }
-        fill(&mut stored.currency, currency.as_ref());
-        fill(&mut stored.text, text_of(&row.description).as_ref());
-        fill(&mut stored.counterparty_name, row.counterparty_name.as_ref());
-        fill(&mut stored.counterparty, row.counterparty.as_ref());
-        fill(&mut stored.balance, row.balance_after.as_ref());
-        fill(&mut stored.reference, row.bank_ref.as_ref());
-        fill(&mut stored.time, row.time.as_ref());
-        fill(&mut stored.value_date, row.value_date.as_ref());
-        fill(&mut stored.transaction_date, row.transaction_date.as_ref());
-        fill(&mut stored.original_amount, row.original_amount.as_ref());
-        fill(&mut stored.original_currency, row.original_currency.as_ref());
+        said.extend(differs.into_iter().map(|differs| format!("{short}: {differs} in {file}")));
         for origin in &row.origins {
             if !stored.sources.contains(origin) {
                 stored.sources.push(origin.clone());
