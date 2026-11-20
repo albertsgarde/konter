@@ -406,6 +406,11 @@ impl<'a> Gaps<'a> {
             .collect()
     }
 
+    /// The unmapped money in whole units, e.g. `14,325`.
+    pub fn unmapped_money(&self) -> String {
+        money(self.totals().unmapped.gross())
+    }
+
     /// One line on how much is mapped, e.g. for an overview.
     pub fn headline(&self, currency: &str) -> String {
         let totals = self.totals();

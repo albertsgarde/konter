@@ -549,8 +549,9 @@ fn site_dir(repo: &Repo) -> PathBuf {
     repo.root.join("build")
 }
 
-/// Writes the site: the spending, income and gaps pages and the front page
-/// leading to them. The gaps are over all sources and all time.
+/// Writes the site: the spending, income and gaps pages and the front page,
+/// which says what needs attention and leads to them. The gaps are over all
+/// sources and all time.
 fn write_site(repo: &Repo, config: &Config, build: &konter_engine::pipeline::Build) -> Result<()> {
     let dir = site_dir(repo);
     let as_of = build.as_of;
@@ -564,7 +565,17 @@ fn write_site(repo: &Repo, config: &Config, build: &konter_engine::pipeline::Bui
         (Page::Income, "Income per account and month.".to_string()),
         (Page::Gaps, gaps.headline(currency)),
     ];
-    site::write(&dir, Page::Home, &site::home(&format!("As of {as_of}"), &cards))
+    let to_settle = match store::table(repo) {
+        Ok(table) => konter_diagnostics::unsettled::html(&table, &store::conflicting_copies(repo, config, &table)),
+        Err(e) => konter_diagnostics::unsettled::unread_html(&format!("{e:#}")),
+    };
+    let home = site::Home {
+        subtitle: &format!("As of {as_of}"),
+        unmapped: &format!("{} {currency}", gaps.unmapped_money()),
+        to_settle: &to_settle,
+        cards: &cards,
+    };
+    site::write(&dir, Page::Home, &site::home(&home))
 }
 
 /// Writes the spending and income pages, telling them what they need to know

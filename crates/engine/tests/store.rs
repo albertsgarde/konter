@@ -456,6 +456,32 @@ fn rows_that_are_the_same_as_each_other_are_refused() {
     assert_eq!(chain.transactions().count(), 1);
 }
 
+/// What's left to settle: a row marked as maybe a transaction is listed with
+/// the transaction that one now is, and not at all once the two are one.
+#[test]
+fn a_row_we_arent_sure_of_is_listed_with_the_transaction_it_may_be() {
+    let (one, two, three) = (id(1).to_string(), id(2).to_string(), id(3).to_string());
+    let ids = |table: &Table| -> Vec<(TransactionId, TransactionId)> {
+        table.unsure().into_iter().map(|(row, other)| (row.id.clone(), other.id.clone())).collect()
+    };
+    let open = table(&[line(1, &[]), line(2, &[("maybe_same_as", &one)])]);
+    assert_eq!(ids(&open), [(id(2), id(1))]);
+    // The one it may be has been joined to a third.
+    let moved = table(&[line(1, &[("maybe_same_as", &two)]), line(2, &[("same_as", &three)]), line(3, &[])]);
+    assert_eq!(ids(&moved), [(id(1), id(3))]);
+    // It has been joined, by way of another row, to the one it may be.
+    let settled =
+        table(&[line(1, &[]), line(2, &[("same_as", &one)]), line(3, &[("maybe_same_as", &one), ("same_as", &two)])]);
+    assert_eq!(ids(&settled), []);
+    assert!(open.conflicts().is_empty());
+
+    let row = open.get(&id(1)).expect("the row");
+    assert_eq!(row.cell("amount").as_deref(), Some("-50"));
+    assert_eq!(row.cell("text").as_deref(), Some("Groceries"));
+    assert_eq!(row.cell("reference").as_deref(), Some(""));
+    assert_eq!(row.cell("colour"), None);
+}
+
 /// Fetched transactions, each (reference, date, amount paid, text, running balance).
 fn fetch_of(rows: &[(&str, &str, &str, &str, Option<&str>)]) -> String {
     let rows: Vec<String> = rows

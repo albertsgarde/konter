@@ -10,17 +10,13 @@ use rust_decimal::Decimal;
 use super::{
     Flow, Gaps, Totals, later_note, mapped_percent, money, percent, plural, policy, raw_description, signed, tidy,
 };
+use crate::esc;
 use crate::suggest::category_hint;
 use konter_engine::config::Config;
 use konter_engine::model::BankTransaction;
 
 /// Sorts the tables and switches between the views (see the file).
 const SCRIPT: &str = include_str!("page.js");
-
-/// Text for HTML, with `&`, `<`, `>` and `"` escaped.
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
-}
 
 impl Gaps<'_> {
     /// What the page's header says under the title.

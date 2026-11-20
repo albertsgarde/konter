@@ -322,8 +322,15 @@ impl Stored {
         self.reference.is_some() && self.reference == row.bank_ref
     }
 
+    /// What the row has in `column`, as the table's text has it. `None` if
+    /// that isn't a column.
+    pub fn cell(&self, column: &str) -> Option<String> {
+        let at = COLUMNS.iter().position(|name| *name == column)?;
+        self.cells().into_iter().nth(at)
+    }
+
     /// This transaction as `row`, a copy of it, has it.
-    fn read_as(&self, row: &BankTransaction) -> Stored {
+    pub fn read_as(&self, row: &BankTransaction) -> Stored {
         Stored::new(self.id.clone(), &self.account, row)
     }
 
@@ -528,6 +535,24 @@ impl Table {
     /// The transactions: every row that hasn't been joined to another.
     pub fn transactions(&self) -> impl Iterator<Item = &Stored> {
         self.rows.values().filter(|row| row.same_as.is_none())
+    }
+
+    /// The rows that were added without knowing whether they are a
+    /// transaction the table already had, each with that transaction: what
+    /// `maybe_same_as` names, or the one that has since been joined to. A
+    /// row that has turned out to be that transaction itself isn't among them.
+    pub fn unsure(&self) -> Vec<(&Stored, &Stored)> {
+        self.rows
+            .values()
+            .filter_map(|row| Some((row, self.resolve(row.maybe_same_as.as_ref()?)?)))
+            .filter(|(row, other)| self.resolve(&row.id).is_some_and(|row| row.id != other.id))
+            .collect()
+    }
+
+    /// The copies that say something else than the table, each with the row
+    /// that noted it.
+    pub fn conflicts(&self) -> Vec<(&Stored, &Conflict)> {
+        self.rows.values().flat_map(|row| row.conflicts.iter().map(move |conflict| (row, conflict))).collect()
     }
 
     /// The raw files that rows have been read from. Reading a file puts

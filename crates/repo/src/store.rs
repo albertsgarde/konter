@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 
 use konter_engine::config::Config;
 use konter_engine::findings::Findings;
+use konter_engine::model::BankTransaction;
 use konter_engine::sources;
 use konter_engine::store::{Table, TransactionId};
 
@@ -35,6 +36,22 @@ pub fn table(repo: &Repo) -> Result<Table> {
     }
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading {TABLE}"))?;
     Table::parse(&text).with_context(|| format!("reading {TABLE}"))
+}
+
+/// The raw rows at the places the table's conflicts name: the copies that
+/// say something else than the table, as their files have them. A copy whose
+/// file can't be read any more is left out.
+pub fn conflicting_copies(repo: &Repo, config: &Config, table: &Table) -> Vec<BankTransaction> {
+    let mut copies = Vec::new();
+    for (row, conflict) in table.conflicts() {
+        // An account that has since left the config has no format to read its files by.
+        if !config.sources.contains_key(&row.account) {
+            continue;
+        }
+        let Ok(file) = load::raw_file(repo, config, &row.account, &conflict.place.file) else { continue };
+        copies.extend(file.rows.into_iter().filter(|copy| copy.origins.contains(&conflict.place)));
+    }
+    copies
 }
 
 /// Writes the table: to a file beside it first, so that a command that is

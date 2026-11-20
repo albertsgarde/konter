@@ -46,6 +46,13 @@ fn add(root: &Path, file: &Path, source: Option<&str>) -> Output {
     command.output().expect("konter runs")
 }
 
+/// The site's front page after a build.
+fn front_page(root: &Path) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_konter"));
+    command.arg("--root").arg(root).args(["build", "--as-of", "2026-02-15"]).output().expect("konter runs");
+    std::fs::read_to_string(root.join("build/index.html")).expect("the front page is read")
+}
+
 fn table(root: &Path) -> String {
     std::fs::read_to_string(root.join(TABLE)).expect("the table is read")
 }
@@ -127,6 +134,13 @@ fn the_table_follows_the_raw_files_and_ids_stay() {
         .map(|entry| entry.expect("an entry").file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(files, ["bank-transactions.csv"]);
+
+    // The front page says how much money is unmapped (the mystery, the
+    // coffee, the books, and the stray file's row, which a build does read)
+    // and that the table has nothing to settle.
+    let page = front_page(&root);
+    assert!(page.contains("Unmapped: <a href=\"gaps.html\"><strong>131 DKK</strong></a>"), "{page}");
+    assert!(page.contains("<h2>Bank transactions to settle</h2>\n<p class=\"muted\">Nothing to settle.</p>"), "{page}");
 }
 
 /// What the reader isn't sure of doesn't stop a file from being read: it's
@@ -174,6 +188,38 @@ fn what_the_reader_isnt_sure_of_is_marked_and_warned_of() {
         "{}",
         row(transfer)
     );
+
+    // The front page has both: the two rows that may be one transaction, and
+    // what the table has beside what the copy says, read from the copy's file.
+    let page = front_page(&root);
+    for line in [
+        "<h3>May be a transaction the table already had (1)</h3>".to_owned(),
+        format!(
+            "<tr class=\"first\"><td class=\"muted\">added</td><td>lunar:b</td><td>2026-01-11</td>\
+             <td class=\"num\">-30.00</td><td class=\"desc\" title=\"Coffee Shop\">Coffee Shop</td><td></td>\
+             <td class=\"num\">20.00</td><td>00000000-0000-0000-0000-000000000001</td>\
+             <td class=\"id\">{moved}</td><td>lunar/555/later.csv:3</td></tr>"
+        ),
+        format!(
+            "<tr><td class=\"muted\">may be</td><td>lunar:b</td><td>2026-01-10</td><td class=\"num\">-30.00</td>\
+             <td class=\"desc\" title=\"Coffee Shop\">Coffee Shop</td><td></td><td class=\"num\">20.00</td>\
+             <td>00000000-0000-0000-0000-000000000001</td><td class=\"id\">{coffee}</td>\
+             <td>lunar/555/statement.csv:3</td></tr>"
+        ),
+        "<h3>Copies that say something else (1)</h3>".to_owned(),
+        format!(
+            "<td class=\"desc\" title=\"Overførsel\">Overførsel</td><td>text</td><td>Overførsel</td>\
+             <td>Transfer</td><td>lunar/555/later.csv:2</td><td class=\"id\">{transfer}</td></tr>"
+        ),
+    ] {
+        assert!(page.contains(&line), "{line}\n{page}");
+    }
+    assert!(!page.contains("Nothing to settle"), "{page}");
+    // The table doesn't keep what a copy says, so a copy whose file can't be
+    // read any more is listed without it.
+    std::fs::write(root.join("data/lunar/555/later.csv"), "no longer an export\n").expect("the file is written");
+    let page = front_page(&root);
+    assert!(page.contains("<td>Overførsel</td><td><span class=\"muted\">can't be read any more</span></td>"), "{page}");
 }
 
 /// The raw file is safe in data/ before the table is looked at, so a table
@@ -194,6 +240,15 @@ fn a_table_that_cant_be_read_is_reported_and_left_alone() {
     );
     assert_eq!(table(&root), "not,a,table\n");
     assert!(root.join(NORDEA_DIR).join("Konto 1234567890 - 2026-02-05 10.00.00.csv").is_file());
+    // The front page says so too, where what's left to settle would be.
+    let page = front_page(&root);
+    assert!(
+        page.contains(
+            "<h2>Bank transactions to settle</h2>\n<p>The store of transactions can't be read: reading \
+             store/bank-transactions.csv: the table's columns are [&quot;not&quot;,"
+        ),
+        "{page}"
+    );
 }
 
 /// A raw file that can't be parsed is left out and named, and the others are read.
@@ -208,4 +263,22 @@ fn a_raw_file_that_cant_be_parsed_is_left_out_of_the_table() {
     assert!(said.contains("raw files that couldn't be read into store/bank-transactions.csv: 1"), "{said}");
     assert!(said.contains("lunar/555/statement.csv"), "{said}");
     assert!(!table(&root).contains("lunar:b"));
+}
+
+/// One kind of open case without the other is still something to settle.
+#[test]
+fn a_row_we_arent_sure_of_alone_is_listed() {
+    let root = scratch("only-unsure");
+    add(&root, &root.join(LUNAR), Some("lunar:b"));
+    let later = root.join("later.csv");
+    std::fs::write(
+        &later,
+        "Date,Time,Title,Amount,Balance,Transaction ID\n\
+         11.01.2026,12.00,Coffee Shop,\"-30,00\",\"20,00\",00000000-0000-0000-0000-000000000001\n",
+    )
+    .expect("the export is written");
+    add(&root, &later, Some("lunar:b"));
+    let page = front_page(&root);
+    assert!(page.contains("<h3>May be a transaction the table already had (1)</h3>"), "{page}");
+    assert!(!page.contains("Nothing to settle") && !page.contains("Copies that say something else"), "{page}");
 }

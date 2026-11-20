@@ -71,15 +71,36 @@ pub fn document(page: Page, subtitle: &str, body: &str) -> String {
         .replace("__BODY__", body)
 }
 
-/// The front page: a card for each other page, with a line about it.
-pub fn home(subtitle: &str, cards: &[(Page, String)]) -> String {
-    let cards: String = cards
+/// What the front page shows.
+pub struct Home<'a> {
+    /// Under the title. Text.
+    pub subtitle: &'a str,
+    /// The unmapped money with its currency, e.g. `14,325 DKK`. Text.
+    pub unmapped: &'a str,
+    /// What's left to settle, as HTML made elsewhere.
+    pub to_settle: &'a str,
+    /// A card for each other page, with a line about it. Text.
+    pub cards: &'a [(Page, String)],
+}
+
+/// The front page: what needs someone's attention (how much money is
+/// unmapped, which leads to the gaps page, and what's left to settle), then
+/// a card for each other page.
+pub fn home(home: &Home) -> String {
+    let cards: String = home
+        .cards
         .iter()
         .map(|(page, text)| {
             format!("<a class=\"card\" href=\"{}\"><h2>{}</h2><p>{}</p></a>\n", page.file(), page.title(), escape(text))
         })
         .collect();
-    document(Page::Home, subtitle, &format!("<div class=\"cards\">\n{cards}</div>"))
+    let body = format!(
+        "<p class=\"lead\">Unmapped: <a href=\"{}\"><strong>{}</strong></a></p>\n{}<div class=\"cards\">\n{cards}</div>",
+        Page::Gaps.file(),
+        escape(home.unmapped),
+        home.to_settle,
+    );
+    document(Page::Home, home.subtitle, &body)
 }
 
 /// Writes a page into the site's directory.
