@@ -2,7 +2,7 @@
 
 What `konter` does today and why, for comparing future changes against: what the code does now and the reasons behind it, some of which live only in the code. If this file and the code disagree, the code is right and this file needs updating.
 
-As of 2026-11-15.
+As of 2026-11-20.
 
 ## 1. Principles
 
@@ -15,14 +15,14 @@ These decide most questions not answered below.
 - **Deterministic and reproducible.** The same inputs and `--as-of` give byte-identical journals. `konter verify` rebuilds with the as-of recorded in the journal header and compares.
 - **Order-independent rules.** At most one pattern rule may match a transaction (priority breaks ties), so the order of rules and the files they're in never matter. That's what lets several agents edit rules at once.
 - **Traceable.** Tags (`bank-id`, `rule`, `subscription`, `pays`, `transfer`, `transfer-pair`, `purchased`, `original`) and `konter explain <id>` lead from any journal line back to the raw data and the rule that made it.
-- **Everything is committed** except secrets: raw data, rules and the generated journals. `jj diff` shows how a change affected the books.
-- **Three kinds of files, in three places.** `data/` is fetched or exported from the banks and never edited. `config/` is everything written by hand. `ledger/` is written only by konter; konter, hledger and the report read it, and nothing edits it. A fourth place, `store/`, is on its way (§4): `fetch` and `add-export` write it, and nothing reads it yet.
+- **Everything is committed** except secrets: raw data, the store's table, rules and the generated journals. `jj diff` shows how a change affected the books.
+- **Four kinds of files, in four places.** `data/` is fetched or exported from the banks and never edited. `store/` is the store of transactions (§4), which konter writes when it reads raw files: the books are built from it and from `config/`, and `data/` is where its rows came from. `config/` is everything written by hand. `ledger/` is written only by konter; konter, hledger and the report read it, and nothing edits it.
 
 ## 2. Structure and data flow
 
 | Crate | Role | IO |
 |---|---|---|
-| `konter-engine` | config and rules parsing, bank formats, merging, the store of transactions (§4), rule engine, transfers, subscriptions, journal text, the whole books and their checks, findings | none |
+| `konter-engine` | config and rules parsing, bank formats, the store of transactions and each source's transactions from it (§4), rule engine, transfers, subscriptions, journal text, the whole books and their checks, findings | none |
 | `konter-repo` | the repository on disk: `load` (inputs), `books` (build, write, verify, `hledger check`), manifest, Enable Banking `fetch`, `store` (the store's file, and the random bytes for its IDs) | yes |
 | `konter-diagnostics` | `gaps`, `suggest`, `coverage` on a finished build, as text (and the gaps page's body as HTML); `unsettled`, the front page's list of the store's rows left to settle, as HTML | none |
 | `konter-report` | the site in `build/`: its shared frame and navigation, and the spending and income pages, read from the books | writes `build/`; doesn't depend on the engine |
@@ -31,8 +31,8 @@ These decide most questions not answered below.
 
 The engine has no IO so that everything it does can be tested from text, and so that reading, writing and fetching are all in one place. The report depends only on the books, so it can't come to depend on how they're made: it reads them as its own `Transaction` type, which `konter` fills from the build. Code that makes or checks the books goes in the engine (or in `konter-repo` if it touches disk or network). Code that reads the books goes in the report. The gaps page needs the build, not just the books, so its body is made in `konter-diagnostics` and only put in the site's frame by `konter-report`.
 
-Flow: `load` reads config (including the accounts and the hand-written transactions), rules and raw files. `pipeline::assemble` then does these steps:
-1. Merges each source.
+Flow: `load` reads config (including the accounts and the hand-written transactions), rules, the store's table and the raw files, and takes each source's transactions from the table (§4). `pipeline::assemble` then does these steps:
+1. Moves pins and later marks on a row that counts as another transaction to that transaction (§5).
 2. Checks freshness and that every account used is declared.
 3. Applies rules and pairs transfers.
 4. Books subscriptions.
@@ -49,17 +49,16 @@ Finally `books` writes everything in `ledger/`: those two and `main.journal`, hl
 - `[books]`: `start`, `currency`, `transfer_window_days` (5).
 - `[sources."<bank>:<account>"]`: one per account you own.
   - `ledger`: the hledger account it books to.
-  - `id_prefix` (lowercase letters, since pins expect them), `formats`.
+  - `number` (its raw data is in `data/<bank>/<number>/`), `formats`.
   - `unmatched`: error, warn or allow (see §5).
   - `start` / `before_start`: an account that wasn't yours before `start` (say, a friend's account that you took over on 2026-09-16). Transfers to or from it before then go to `before_start` (e.g. `assets:receivable:sam`), whether it's imported or not. An imported account with a `start` needs `before_start` if there are any; for one that isn't imported, transfers without it go to its own account.
-  - `cutover`: for mixing CSV and API data.
   - `set_aside`: read only by the report.
 - `[banks.<name>]`: Enable Banking settings and `history_days` (540 for Nordea).
 
 **`data/`**
 - Raw files are never edited. `data/MANIFEST` records their hashes, and a mismatch is an error.
 - Raw files are only ever added, never overwritten, and a path is recorded once: `add-export` refuses a file that has changed since it was added (even when given that file itself) and a name already taken by other content. `fetch` and `add-export` lock `data/` while they add to it, so several can run at once, and the manifest is replaced in one step, so it's never seen half-written.
-- Any number of overlapping files is fine; merging sorts them out (§4).
+- Any number of overlapping files is fine: reading them into the store finds the transactions they share (§4).
 - A `.balance.toml` sidecar (from `add-export --balance`) gives a balance assertion for exports without a running balance. Like a raw file it's recorded once: a different balance for the same export is refused.
 - `data/reference/transactions.csv` is an old categorized export. It's only a hint for `suggest` and `gaps`, never an input to the books.
 
@@ -83,24 +82,25 @@ A posting with both `amount` and `balance` asserts the balance. Hand-written tra
   - Enable Banking's description is the first non-empty line of the remittance text.
   - The counterparty name comes from the creditor or debtor.
   - The purchase date is kept (`purchased:` tag), but **booking date** is the transaction date throughout.
-- **Merging per source:**
-  - Deduplicate overlapping files; a disagreement between files is an error (`overlap conflict`). Copies in the same format must agree on everything, booking date and amount included: rows told apart by the bank's reference alone would otherwise let a reference the bank used twice swallow a transaction. Copies in two formats may describe a transaction differently, but must agree on booking date and amount: the date is part of the ID.
-  - On accounts identified by the running balance (Nordea), rows that look alike (same day, amount and running balance) are told apart by counting them oldest first within each file. A file is taken to have every transaction of a day up to the last one it has: it may end partway through a day, but never starts partway or skips a row. So the n-th of a kind is the same row in every file. A Lunar row is simply the row with its reference.
-    - Fetched data has references as well, so between two fetches a row an earlier file had is placed by its reference, not its count, and files that list look-alikes in another order agree. A file that starts partway or skips one is an `incomplete day` error naming the file, its row and the look-alike it lacks, which another file has at the same count or the one before. The row stays a transaction of its own, so this is the only error.
-    - Where an export is one of the two files (Nordea's exports have no references), such a file shows only indirectly: look-alikes that read differently are a disagreement between files of one format, and ones that read the same lose a transaction and break the balance, unless another file has the whole day, which then gives the same result as that file alone.
-    - For a source without running balances or references, nothing can check this.
-  - Report rows missing from a file that covers their date.
-  - Order rows so the running balance chains; a break is an error. A day with no balance before it (the first, or the one after a break) is put in an order that ends where the next day starts. Where rows could go either way, their order comes from the export with the most rows that day (positions in different files can't be compared), and rows that look alike keep the order they were counted in, so their IDs don't depend on which exports there are.
-  - `cutover` picks CSV before a date and API data from it on. Not needed today: the two agree.
-- **IDs** (`<prefix>-<date>-<6 hex>`) must never change, because pins refer to them, so they mustn't depend on which files a transaction is in. The account, not the row, decides what they're hashed from: what every file of its bank has.
-  - Nordea (bank `nordea`, or `nordea-csv` among its formats): booking date, amount, running balance and the count among rows that look alike. Its exports have no reference; they and its fetched data have the running balance.
-  - Lunar and any other account: the bank's reference, which Lunar's exports and fetched data both have.
+- **The store of transactions** (`store` in the engine) is a table, `store/bank-transactions.csv`, with a row for each transaction in the raw files, also those from before a source's `start`. `fetch` and `add-export` keep it up to date: after adding a raw file, they read into it every raw file in `data/MANIFEST` that it hasn't read yet. `konter store` does only that.
+- **IDs:** a transaction gets a random UUID when its row is added (`3f2b8c1e-5d4a-4f6b-9c7d-0a1b2c3d4e5f`) and keeps it. It's never worked out from the data again, so new data can't change it. An ID worked out from the bank's files could change when more data arrived: they show a transaction differently from one format to the next, and can't always tell two transactions apart. Pins and later marks name a transaction by its ID (§5), and so do the `bank-id` tag, `konter unmatched`, `konter explain` and the digest.
+- **Reading a file** never fails, and what the table has is never overwritten. Each row of the file ends one of three ways:
+  - It's surely a transaction the table has, and fills in what that one lacks. Sure means the same bank reference, day and amount; or, without a reference to go by, the same day, amount and text, with nothing both have that says otherwise.
+  - It has a transaction's reference, day and amount, but says something else in another field both have (other wording, say). It's that transaction all the same: the transaction keeps what it had, gains what it lacked, and notes the copy in `conflicts`.
+  - Otherwise it's added as a row of its own. When it may be a transaction the table has, that one's ID goes in `maybe_same_as`.
 
-  A transaction that lacks what its account's IDs are made from (a Lunar row without a reference, a Nordea row without a running balance) is an `ids` error: its ID would change when a file that has it arrives. With a `cutover` no such file can arrive, since each format has its own dates, so a row is hashed from the best it has: running balance, else reference, else date, amount and description.
-
-  So **don't change how descriptions are derived** for sources without balances or references: it would orphan their pins. That's why showing the merchant name instead of a bare reference number is done only in the output (§7), never on the transaction.
-
-  The description stays out of the hash even where there is a running balance: the same transaction can read differently in CSV and in fetched data, so its ID would depend on which format it came in and could change when the other one arrives.
+  Rows marked `maybe_same_as` and copies in `conflicts` are for a person to settle. They're warned about once, when their file is read, and the site's front page lists them for as long as they're unsettled (§10).
+- **A build takes each source's transactions from the table:** their dates, amounts, text, counterparty, running balance and reference. It leaves out rows from before the source's `start` and rows joined to another (`same_as`).
+  - A row marked `maybe_same_as` counts as the transaction it may be until a person settles it, so the books have that transaction once, and the build warns (`store`). Such a row is nearly always the same transaction worded differently in another format, and where the bank gives a running balance, the chain breaks if it isn't. So a table with open cases still builds.
+  - A pin or later mark on a row that counts as another transaction (joined, or not settled yet) applies to that transaction (§5). `konter explain` follows it the same way.
+- **The raw files are still read**, as evidence. A transaction gets its original fields (`raw`, which rules can match on) from the first file it was read from, and its place within its day from the file with the most rows that day. The files also give the balance snapshots and how far the data reaches. A transaction whose file can't be read stays in the books, without its original fields.
+- **Checks:**
+  - A raw file the table hasn't read is an error (`store`), and the books are built without its rows until `konter store` reads it.
+  - A transaction missing from a file that covers its day is an error (`overlap conflict`). Only days strictly inside the file count, since an export may begin or end partway through a day.
+  - Where every transaction of a source has a running balance, it must chain; a break is an error (`balance chain`).
+  - A table that can't be read stops the build. `fetch` and `add-export` leave such a table as it is: made again, it would give every transaction a new ID.
+- **Order within a day:** by time of day where the bank gives one, then by place in the file with the most rows that day (places in different files can't be compared). Where every transaction has a running balance, the order is the one the balance chains in, and the order above decides only what the balance leaves open. A day with no balance before it (the first, or the one after a break) is put in an order that ends where the next day starts.
+- **The table keeps the text a transaction was first read with.** A change to how a parser derives descriptions reaches only rows read after it, and copies of rows already read then disagree with the table. That's why showing the merchant name instead of a bare reference number is done only in the output (§7), never on the transaction.
 - **Opening balances** are derived from the first running balance (or a snapshot) and booked at `books.start` (or the source's `start`) against `equity:opening-balances`. Moving `start` re-derives them.
 - **Freshness warnings:**
   - Fetched data older than 35 days, or exported data older than 90.
@@ -110,15 +110,6 @@ A posting with both `amount` and `balance` asserts the balance. Hand-written tra
 Data quirks worth knowing:
 - From November 2025, Nordea card payments through Enable Banking have a bare reference number as description; the merchant is only in the counterparty name. Rules match both (`when.any = [{ description_re = … }, { counterparty_name_re = … }]`).
 - MobilePay transfers read `MobilePay <full name>`.
-
-A store of transactions (`store` in the engine) is being built to take the place of merging. It's a table, `store/bank-transactions.csv`, with a row for each transaction. A transaction gets a random UUID when it's first read and keeps it, so new data can't change an ID. `fetch` and `add-export` keep the table up to date: after adding a raw file, they read into it every raw file in `data/MANIFEST` that it hasn't read yet. It has every row of the raw files, also those from before a source's `start`. Nothing builds from it yet: everything above still describes how the books are made.
-
-Reading a file never fails, and what the table has is never overwritten. Each row of the file ends one of three ways:
-- It's surely a transaction the table has, and fills in what that one lacks. Sure means the same bank reference, day and amount; or, without a reference to go by, the same day, amount and text, with nothing both have that says otherwise.
-- It has a transaction's reference, day and amount, but says something else in another field both have (other wording, say). It's that transaction all the same: the transaction keeps what it had, gains what it lacked, and notes the copy in `conflicts`.
-- Otherwise it's added as a row of its own. When it may be a transaction the table has, that one's ID goes in `maybe_same_as`.
-
-Rows marked `maybe_same_as` and copies in `conflicts` are for a person to settle. They're warned about once, when their file is read, and the site's front page lists them for as long as they're unsettled. That page is the only thing that reads the table so far.
 
 ## 5. Rules
 
@@ -131,7 +122,8 @@ Rows marked `maybe_same_as` and copies in `conflicts` are for a person to settle
   - `raw.<field>`;
   - `any`, `not`.
 
-  Two pattern rules matching the same transaction is an error unless `priority` separates them. Rules or pins that match nothing are reported as dead.
+  Two pattern rules matching the same transaction is an error unless `priority` separates them. Rules or pins that match nothing are reported as dead, except a pin for a transaction from before its source's `start`.
+- **A pin names a transaction by its ID** in the store (§4), and an ID of any other form is refused when the rules load. A pin or later mark on a row that counts as another transaction (§4) applies to that one. If that transaction has its own as well, it's an error (`pins`).
 - **Prefer a rule when the merchant always means the same thing,** a pin when it's a one-off or the meaning varies. Payments to people are pinned one by one, because a person isn't a category. A rule can be limited by dates when a counterparty meant one thing for a while (a landlord's late fees for a few months, say).
 - **Outputs:**
   - `account`.
@@ -166,8 +158,8 @@ Rows marked `maybe_same_as` and copies in `conflicts` are for a person to settle
 - **`forecast.journal`** holds periodic transactions for future subscription due dates, for `hledger … --forecast`.
 - **The whole books** (`Build.books`) are what `generated.journal` holds, in memory: the generated transactions and the hand-written ones, not the forecast. They're in journal order: by date, and within a date openings, subscription due dates, bank transactions in chain order, hand-written transactions in file order, then balance snapshots. Every amount is filled in. Every build checks what `hledger check --strict` would: every transaction balances, every balance assertion holds in that order, and every account and commodity is declared.
 - **Findings** (`findings.rs`, printed by every build) are what needs attention:
-  - **Errors:** ambiguous matches, broken chains, file conflicts, manifest mismatches, undeclared accounts or commodities, unbalanced transactions, failed balance assertions, unpaired transfers, unmatched under an `error` policy, and hledger failures (`konter verify`).
-  - **Warnings:** deficits, overpayments, dead rules, stale data, expiring consents.
+  - **Errors:** ambiguous matches, broken chains, file conflicts, raw files the store hasn't read, manifest mismatches, undeclared accounts or commodities, unbalanced transactions, failed balance assertions, unpaired transfers, unmatched under an `error` policy, and hledger failures (`konter verify`).
+  - **Warnings:** deficits, overpayments, dead rules, stale data, expiring consents, rows of the store that aren't settled.
   - **Info and ok:** everything else.
 
   The journal is written even with errors, unless inputs can't be read at all. Errors make the exit code non-zero, and `--strict` treats warnings as errors too.

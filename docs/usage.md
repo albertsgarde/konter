@@ -8,7 +8,7 @@ What the tool does and why is in [spec.md](spec.md), and getting bank data in [f
 
 ## The loop
 
-1. **Get new data:** `just fetch` gets Nordea and Lunar through Enable Banking (after `just more konter link <bank>`) and then rebuilds, so step 2 is done too. CSV exports are the backup, and the only way for Nordea savings accounts: `just more konter add-export <file> [--source …]`.
+1. **Get new data:** `just fetch` gets Nordea and Lunar through Enable Banking (after `just more konter link <bank>`) and then rebuilds, so step 2 is done too. CSV exports are the backup, and the only way for Nordea savings accounts: `just more konter add-export <file> [--source …]`. Both read the new file into the store of transactions, which the books are built from. If a build says raw files haven't been read into the table, `just more konter store` reads them.
 2. **Rebuild** (after changing rules, or adding an export): `just more build`. This writes `ledger/generated.journal` and `ledger/forecast.journal`, runs `hledger check --strict`, and prints what needs attention.
 3. **Map what's new:**
    - `just gaps` opens the gaps page (`just more gaps` prints the same as text). It shows how much of your income and spending is mapped (transfers and balance-sheet moves like buying a home left out), per account and in total, then the largest groups of similar unmapped transactions with the mapped share you reach once each is mapped, so you can see which few rules cover most of the money. The page lists every group, or with the Transactions switch every unmapped transaction, and sorts by any column (→ mapped then adds up in the order shown); the text can be narrowed with `just more gaps nordea:main`, `--skip nordea:spending`, `--from 2026-10-01` or `--top 0` (all groups).
@@ -19,7 +19,7 @@ What the tool does and why is in [spec.md](spec.md), and getting bank data in [f
    - Going away: declare the trip in `config/rules/trips.toml` (`[trip.<name>]` with `account`, `from`, `to`), and the digest marks purchases made during it.
    - `just more konter explain <id>` shows a transaction's raw data, which rules match it and what it produced.
    - Edit the source's file in `config/rules/` (for example `nordea/main.toml`; your books' `config/rules/README.md` says which file holds what, and [rules.md](rules.md) how to write rules), declare new accounts in `config/accounts.toml`, and rebuild.
-4. **Commit:** raw data, rules and the generated journals together. `just more verify` confirms that the journals match a fresh build and that hledger is happy, with the working copy and with the pinned tool (below).
+4. **Commit:** raw data, the store's table, rules and the generated journals together. `just more verify` confirms that the journals match a fresh build and that hledger is happy, with the working copy and with the pinned tool (below).
 
 ## The pinned tool
 
@@ -46,6 +46,6 @@ The recipes run the tool's working copy, so a change to the tool shows up in the
 | Hand-written transactions | `config/transactions.toml` |
 | The books, for hledger (generated; never edit) | `ledger/main.journal`, which includes `generated.journal` and `forecast.journal` |
 | Raw bank data (never edit) | `data/<bank>/<account>/`, hashes in `data/MANIFEST` |
-| The store of transactions (written by `fetch` and `add-export`) | `store/bank-transactions.csv` |
+| The store of transactions (written by `fetch`, `add-export` and `store`) | `store/bank-transactions.csv` |
 | Enable Banking key and sessions, links begun with `konter link --start`, the relay's `relay.toml` | `~/.config/konter/` (outside the repo) |
 | The relay's login, encryption store and outbox (on a server) | `~/.local/state/konter-relay/` |

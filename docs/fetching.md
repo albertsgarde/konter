@@ -61,13 +61,13 @@ just fetch --source nordea:spending  # one source
 
 Each fetch gets transactions from 30 days before the last fetched transaction (or from the source's start the first time), plus the current balance. A fetch with no new transactions isn't stored, unless the last stored fetch is over 30 days old (so quiet accounts still record how far their data reaches). Fetching, `add-export` and `build` never change or remove existing raw data, so they're safe to run any time. The raw responses are written to `data/<bank>/<account>/eb-<timestamp>.json` and recorded in the MANIFEST. `null` fields are dropped (the API lists every field and fills in few), and each transaction is on its own line, which keeps files about a third of their raw size. Pending transactions are ignored when reading.
 
-Then `fetch` brings the store of transactions ([spec.md](spec.md) §4) up to date: it reads into `store/bank-transactions.csv` every raw file the table hasn't read yet, and prints how many transactions the table has. Nothing builds from it yet. When a file is read, two kinds of warning can come from it, each for a person to look at. The site's front page lists both until they're settled. One is a row that may be a transaction the table already had: it was added as a row of its own, with the other's ID in `maybe_same_as`. The other is a copy that says something else than the table about a field both have: the table kept what it had, and the transaction notes the copy in `conflicts`. A table that can't be read is an error, and is left as it is, never made again from scratch, since that would give every transaction a new ID. The raw file is added all the same.
+Then `fetch` brings the store of transactions ([spec.md](spec.md) §4) up to date: it reads into `store/bank-transactions.csv` every raw file the table hasn't read yet, and prints how many transactions the table has. The books are built from the table, so a build reports a raw file it hasn't read as an error, and `just more konter store` reads it. When a file is read, two kinds of warning can come from it, each for a person to look at. The site's front page lists both until they're settled. One is a row that may be a transaction the table already had: it was added as a row of its own, with the other's ID in `maybe_same_as`, and until it's settled the books count it as that transaction. The other is a copy that says something else than the table about a field both have: the table kept what it had, and the transaction notes the copy in `conflicts`. A table that can't be read is an error, and is left as it is, never made again from scratch, since that would give every transaction a new ID. The raw file is added all the same.
 
-**What we found on the first fetch (2026-11-08):** Nordea's API has running balances, so its rows match the CSV exports exactly. Nordea only goes back 540 days. Lunar's API has no running balances, but its `entry_reference` is the CSV export's "Transaction ID", so its rows match the CSV by that instead. A Lunar ID is made from that reference, so a transaction has the same ID whether it was fetched, exported or both. A Nordea ID is made from the running balance, since Nordea's exports have no reference. Neither bank needs `cutover`.
+**What we found on the first fetch (2026-11-08):** Nordea's API has running balances, and they match the CSV exports'. Nordea only goes back 540 days. Lunar's API has no running balances, but its `entry_reference` is the CSV export's "Transaction ID", so the store finds a fetched Lunar row's exported copy by that. Nordea's exports have no reference, so Nordea rows are matched by day, amount and text.
 
-For a new bank, check `just more konter build` after the first fetch:
-- A new bank's IDs are made from the bank's reference, so `build` reports an `ids` error for a transaction without one.
-- If it reports `ids` errors or overlap conflicts (the formats share no bank reference, or disagree on booking dates or amounts), set `cutover = <date of the first fetched transaction>` for the source in `config/sources.toml`. CSV data is then used before that date and API data from it on. Pick it once: moving it changes the IDs of transactions in between (dead-pin warnings would show which pins are affected).
+For a new bank, check `just more konter build` and the site's front page after the first fetch:
+- Many rows that may be transactions the table already had mean the formats word transactions differently and share no reference. Each counts as the transaction it may be until it's settled. Where the bank gives a running balance, a break in the chain shows a wrong guess.
+- An `overlap conflict` means a file lacks a transaction that another file has on a day both cover. Between formats, that usually means they disagree on a booking date or amount, so the table has the transaction twice.
 
 ## CSV exports (backup)
 
@@ -79,13 +79,13 @@ After getting a file, add it with:
 just more konter add-export <file> [--source <source>]
 ```
 
-This copies the file into the account's directory, records its hash in `data/MANIFEST` and checks it against the existing data straight away. Then it brings the store of transactions up to date, as `fetch` does. Then run `just more build`.
+This copies the file into the account's directory and records its hash in `data/MANIFEST`. Then it brings the store of transactions up to date, as `fetch` does, and checks the account's data straight away. Then run `just more build`.
 
 The tool accepts any number of files covering any date ranges. Overlapping the previous file by a few weeks is recommended: the overlap is how the tool checks that a re-export gives the same transactions as before. Where the bank gives a running balance (both Nordea and Lunar CSVs do), gaps between files are caught by the balance chain even without overlap.
 
 For an export without a running-balance column, add `--balance <amount>` (and `--balance-date <date>` if it isn't today's balance). That records the balance the bank showed, in a `.balance.toml` file next to the export, and it becomes a balance check. Neither Nordea's nor Lunar's CSV needs it.
 
-To import an account for the first time, give it `number`, `id_prefix` and `formats` in `config/sources.toml` (see the placeholders there) before running `add-export`.
+To import an account for the first time, give it `number` and `formats` in `config/sources.toml` (see the placeholders there) before running `add-export`.
 
 ### Nordea: netbank
 
