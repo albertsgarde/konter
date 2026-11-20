@@ -6,7 +6,7 @@ This repo is the tool, `konter`, and it's public. The books it works on are a se
 
 ```
 ./          the tool: crates/, docs/, justfile, more.just, server/
-books/      the books: config/, data/, ledger/
+books/      the books: config/, data/, ledger/, store/
 ```
 
 - **Mapping work follows [books/AGENTS.md](books/AGENTS.md).** Read it before touching anything in `books/`.

@@ -46,5 +46,6 @@ The recipes run the tool's working copy, so a change to the tool shows up in the
 | Hand-written transactions | `config/transactions.toml` |
 | The books, for hledger (generated; never edit) | `ledger/main.journal`, which includes `generated.journal` and `forecast.journal` |
 | Raw bank data (never edit) | `data/<bank>/<account>/`, hashes in `data/MANIFEST` |
+| The store of transactions (written by `fetch` and `add-export`) | `store/bank-transactions.csv` |
 | Enable Banking key and sessions, links begun with `konter link --start`, the relay's `relay.toml` | `~/.config/konter/` (outside the repo) |
 | The relay's login, encryption store and outbox (on a server) | `~/.local/state/konter-relay/` |

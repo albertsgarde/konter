@@ -20,6 +20,7 @@
     "deny": [
       "Edit(books/data/**)",
       "Edit(books/ledger/**)",
+      "Edit(books/store/**)",
       "Bash(git push:*)",
       "Bash(jj git push:*)",
       "Bash(jj -R books git push:*)"

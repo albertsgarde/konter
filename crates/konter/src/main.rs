@@ -23,6 +23,7 @@ use konter_repo::init;
 use konter_repo::load;
 use konter_repo::manifest::{self, Manifest};
 use konter_repo::repo::Repo;
+use konter_repo::store;
 use konter_report::site::{self, Page};
 
 #[derive(Parser)]
@@ -741,6 +742,7 @@ fn add_export(
 
     let mut findings = Findings::default();
     load::source(repo, config, &source_name, &mut findings)?;
+    store::update(repo, config, &mut findings);
     write!(Stdout, "{}", findings.render(false))?;
     Ok(exit_code(&findings, false))
 }
@@ -973,6 +975,7 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<&str>, from: Option<Date
     if !fetched_any && !findings.has_errors() {
         findings.warn("fetch", "nothing to fetch: no source has \"enable-banking\" in its formats");
     }
+    store::update(repo, config, &mut findings);
     write!(Stdout, "\n{}", findings.render(false))?;
     Ok(exit_code(&findings, false))
 }

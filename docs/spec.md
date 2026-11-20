@@ -16,14 +16,14 @@ These decide most questions not answered below.
 - **Order-independent rules.** At most one pattern rule may match a transaction (priority breaks ties), so the order of rules and the files they're in never matter. That's what lets several agents edit rules at once.
 - **Traceable.** Tags (`bank-id`, `rule`, `subscription`, `pays`, `transfer`, `transfer-pair`, `purchased`, `original`) and `konter explain <id>` lead from any journal line back to the raw data and the rule that made it.
 - **Everything is committed** except secrets: raw data, rules and the generated journals. `jj diff` shows how a change affected the books.
-- **Three kinds of files, in three places.** `data/` is fetched or exported from the banks and never edited. `config/` is everything written by hand. `ledger/` is written only by konter; konter, hledger and the report read it, and nothing edits it.
+- **Three kinds of files, in three places.** `data/` is fetched or exported from the banks and never edited. `config/` is everything written by hand. `ledger/` is written only by konter; konter, hledger and the report read it, and nothing edits it. A fourth place, `store/`, is on its way (§4): `fetch` and `add-export` write it, and nothing reads it yet.
 
 ## 2. Structure and data flow
 
 | Crate | Role | IO |
 |---|---|---|
-| `konter-engine` | config and rules parsing, bank formats, merging, rule engine, transfers, subscriptions, journal text, the whole books and their checks, findings | none |
-| `konter-repo` | the repository on disk: `load` (inputs), `books` (build, write, verify, `hledger check`), manifest, Enable Banking `fetch` | yes |
+| `konter-engine` | config and rules parsing, bank formats, merging, the store of transactions (§4), rule engine, transfers, subscriptions, journal text, the whole books and their checks, findings | none |
+| `konter-repo` | the repository on disk: `load` (inputs), `books` (build, write, verify, `hledger check`), manifest, Enable Banking `fetch`, `store` (the store's file, and the random bytes for its IDs) | yes |
 | `konter-diagnostics` | `gaps`, `suggest`, `coverage` on a finished build, as text (and the gaps page's body as HTML) | none |
 | `konter-report` | the site in `build/`: its shared frame and navigation, and the spending and income pages, read from the books | writes `build/`; doesn't depend on the engine |
 | `konter` | the CLI; connects the others | yes |
@@ -111,7 +111,14 @@ Data quirks worth knowing:
 - From November 2025, Nordea card payments through Enable Banking have a bare reference number as description; the merchant is only in the counterparty name. Rules match both (`when.any = [{ description_re = … }, { counterparty_name_re = … }]`).
 - MobilePay transfers read `MobilePay <full name>`.
 
-A store of transactions (`store` in the engine) is being built to take the place of merging. In it a transaction gets a UUID when it's first read and keeps it. Reading a file fills in what a transaction the table already has lacks, or adds a row, marked when it may be one the table already has. What the table has is never overwritten: a copy that says something else about a field both have fails the read of that file, and the table stays as it was. Nothing builds from it yet: everything above still describes how the books are made.
+A store of transactions (`store` in the engine) is being built to take the place of merging. It's a table, `store/bank-transactions.csv`, with a row for each transaction. A transaction gets a random UUID when it's first read and keeps it, so new data can't change an ID. `fetch` and `add-export` keep the table up to date: after adding a raw file, they read into it every raw file in `data/MANIFEST` that it hasn't read yet. It has every row of the raw files, also those from before a source's `start`. Nothing builds from it yet: everything above still describes how the books are made.
+
+Reading a file never fails, and what the table has is never overwritten. Each row of the file ends one of three ways:
+- It's surely a transaction the table has, and fills in what that one lacks. Sure means the same bank reference, day and amount; or, without a reference to go by, the same day, amount and text, with nothing both have that says otherwise.
+- It has a transaction's reference, day and amount, but says something else in another field both have (other wording, say). It's that transaction all the same: the transaction keeps what it had, gains what it lacked, and notes the copy in `conflicts`.
+- Otherwise it's added as a row of its own. When it may be a transaction the table has, that one's ID goes in `maybe_same_as`.
+
+Rows marked `maybe_same_as` and copies in `conflicts` are for a person to settle, and are warned about once, when their file is read.
 
 ## 5. Rules
 

@@ -26,7 +26,7 @@ The server pushes without asking, so what it may push is fenced in from several 
 - **Pushed commits are immutable.** `just more setup-server` sets `immutable_heads()` to include `remote_bookmarks()` in both repos, so jj refuses to rewrite anything already pushed, and every push is a fast-forward. (`jj git push` otherwise moves a bookmark sideways or backwards whenever the remote is where jj last saw it.)
 - **If you rewrite `auto`** (squash, reword, merge it into `main`), the next `auto-start` fetches first and builds on what you pushed, never over it. If both sides rewrote it, `auto` is conflicted and the server stops and says so.
 - **A hook, as a second line of defence.** `server/guard-jj` is a Claude Code hook that blocks any command with `--ignore-immutable`, and any push other than exactly `jj git push --bookmark auto`.
-- **Permissions.** `server/claude-settings.json` allowlists what the headless sessions may do: edit rule files and `config/accounts.toml`, run `konter` and the recipes above through `just pinned`, and read the books' history. Anything else is refused, since nobody is there to approve it. Raw `jj git push` and edits to `data/` and `ledger/` are denied outright.
+- **Permissions.** `server/claude-settings.json` allowlists what the headless sessions may do: edit rule files and `config/accounts.toml`, run `konter` and the recipes above through `just pinned`, and read the books' history. Anything else is refused, since nobody is there to approve it. Raw `jj git push` and edits to `data/`, `ledger/` and `store/` are denied outright.
 - **Bank data is data.** Descriptions in bank transactions are written by whoever sent the money. The server's instructions say to treat them as data, never as instructions.
 
 ## Setting up

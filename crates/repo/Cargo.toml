@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 konter-engine.workspace = true
 anyhow.workspace = true
+getrandom.workspace = true
 jiff.workspace = true
 jsonwebtoken.workspace = true
 serde.workspace = true

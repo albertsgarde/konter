@@ -59,7 +59,9 @@ just fetch                         # all sources with "enable-banking" in their 
 just fetch --source nordea:spending  # one source
 ```
 
-Each fetch gets transactions from 30 days before the last fetched transaction (or from the source's start the first time), plus the current balance. A fetch with no new transactions isn't stored, unless the last stored fetch is over 30 days old (so quiet accounts still record how far their data reaches). Fetching, `add-export` and `build` never change or remove existing data, so they're safe to run any time. The raw responses are written to `data/<bank>/<account>/eb-<timestamp>.json` and recorded in the MANIFEST. `null` fields are dropped (the API lists every field and fills in few), and each transaction is on its own line, which keeps files about a third of their raw size. Pending transactions are ignored when reading.
+Each fetch gets transactions from 30 days before the last fetched transaction (or from the source's start the first time), plus the current balance. A fetch with no new transactions isn't stored, unless the last stored fetch is over 30 days old (so quiet accounts still record how far their data reaches). Fetching, `add-export` and `build` never change or remove existing raw data, so they're safe to run any time. The raw responses are written to `data/<bank>/<account>/eb-<timestamp>.json` and recorded in the MANIFEST. `null` fields are dropped (the API lists every field and fills in few), and each transaction is on its own line, which keeps files about a third of their raw size. Pending transactions are ignored when reading.
+
+Then `fetch` brings the store of transactions ([spec.md](spec.md) §4) up to date: it reads into `store/bank-transactions.csv` every raw file the table hasn't read yet, and prints how many transactions the table has. Nothing builds from it yet. When a file is read, two kinds of warning can come from it, each for a person to look at. One is a row that may be a transaction the table already had: it was added as a row of its own, with the other's ID in `maybe_same_as`. The other is a copy that says something else than the table about a field both have: the table kept what it had, and the transaction notes the copy in `conflicts`. A table that can't be read is an error, and is left as it is, never made again from scratch, since that would give every transaction a new ID. The raw file is added all the same.
 
 **What we found on the first fetch (2026-11-08):** Nordea's API has running balances, so its rows match the CSV exports exactly. Nordea only goes back 540 days. Lunar's API has no running balances, but its `entry_reference` is the CSV export's "Transaction ID", so its rows match the CSV by that instead. A Lunar ID is made from that reference, so a transaction has the same ID whether it was fetched, exported or both. A Nordea ID is made from the running balance, since Nordea's exports have no reference. Neither bank needs `cutover`.
 
@@ -77,7 +79,7 @@ After getting a file, add it with:
 just more konter add-export <file> [--source <source>]
 ```
 
-This copies the file into the account's directory, records its hash in `data/MANIFEST` and checks it against the existing data straight away. Then run `just more build`.
+This copies the file into the account's directory, records its hash in `data/MANIFEST` and checks it against the existing data straight away. Then it brings the store of transactions up to date, as `fetch` does. Then run `just more build`.
 
 The tool accepts any number of files covering any date ranges. Overlapping the previous file by a few weeks is recommended: the overlap is how the tool checks that a re-export gives the same transactions as before. Where the bank gives a running balance (both Nordea and Lunar CSVs do), gaps between files are caught by the balance chain even without overlap.
 
