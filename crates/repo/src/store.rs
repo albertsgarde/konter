@@ -1,7 +1,7 @@
 //! The store of transactions on disk: the engine's table
 //! (`konter_engine::store`), kept in `store/bank-transactions.csv` and brought
 //! up to date with the raw files in `data/` by the commands that add one,
-//! `fetch` and `add-export`. Nothing builds from it yet.
+//! `fetch`, `add-export` and `store`. The books are built from it (`load`).
 
 use std::collections::BTreeSet;
 
@@ -69,10 +69,14 @@ fn save(repo: &Repo, table: &Table) -> Result<()> {
 /// Brings the table up to date with `data/` and says in `findings` what came
 /// of it. The raw files are in place whatever happens here, so a table that
 /// can't be read or written is an error among the findings and not the end
-/// of the command.
-pub fn update(repo: &Repo, config: &Config, findings: &mut Findings) {
-    if let Err(e) = read_new_files(repo, config, findings) {
-        findings.error("store", format!("{TABLE} wasn't brought up to date: {e:#}"));
+/// of the command. Returns whether the table is up to date.
+pub fn update(repo: &Repo, config: &Config, findings: &mut Findings) -> bool {
+    match read_new_files(repo, config, findings) {
+        Ok(()) => true,
+        Err(e) => {
+            findings.error("store", format!("{TABLE} wasn't brought up to date: {e:#}"));
+            false
+        }
     }
 }
 

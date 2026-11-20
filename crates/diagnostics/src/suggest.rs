@@ -206,7 +206,7 @@ mod tests {
         let tx = |description: &str, name: Option<&str>| BankTransaction {
             id: String::new(),
             source: "test:a".into(),
-            format: konter_engine::config::Format::EnableBanking,
+            format: Some(konter_engine::config::Format::EnableBanking),
             booked: jiff::civil::date(2026, 1, 1),
             time: None,
             value_date: None,

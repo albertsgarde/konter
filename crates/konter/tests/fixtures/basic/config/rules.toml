@@ -53,7 +53,7 @@ name = "never-matches"
 when = { description = "Nope" }
 account = "expenses:coffee"
 
-[pin."ba-2026-01-30-3d3806"]
+[pin."00000000-0000-4000-8000-000000000009"]
 payee = "Concert tickets"
 note = "A friend owes me for one"
 split = [
@@ -61,7 +61,7 @@ split = [
   { account = "assets:receivable:friend", rest = true },
 ]
 
-[pin."ba-2026-01-10-58c981"]
+[pin."00000000-0000-4000-8000-000000000004"]
 transactions = [
   { payee = "Insurance (prepaid)", postings = [
       { account = "@bank" },
@@ -71,11 +71,11 @@ transactions = [
       { account = "expenses:insurance", rest = true } ] },
 ]
 
-[pin."ba-2026-01-15-64ffb9"]
+[pin."00000000-0000-4000-8000-000000000005"]
 ignore = "charge and refund cancel out"
 
-[pin."ba-2026-01-15-4c22de"]
+[pin."00000000-0000-4000-8000-000000000006"]
 ignore = "charge and refund cancel out"
 
-[pin."ba-2026-01-31-000000"]
+[pin."00000000-0000-4000-8000-ffffffffffff"]
 unknown = "this transaction doesn't exist: reported as a dead pin"

@@ -72,7 +72,7 @@ pub fn parse(text: &str, ctx: &FileContext) -> Result<Vec<BankTransaction>> {
             Ok(Some(BankTransaction {
                 id: String::new(),
                 source: ctx.source.clone(),
-                format: Format::NordeaCsv,
+                format: Some(Format::NordeaCsv),
                 booked,
                 time: None,
                 value_date: None,

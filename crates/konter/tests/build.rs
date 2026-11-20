@@ -65,7 +65,7 @@ fn apply(rules: &str) -> (engine::Generated, Findings) {
 fn ignoring_one_side_only_is_an_error() {
     let (_, findings) = apply(
         r#"
-        [pin."ba-2026-01-15-64ffb9"]
+        [pin."00000000-0000-4000-8000-000000000005"]
         ignore = "only the charge"
         "#,
     );
@@ -77,11 +77,11 @@ fn ignoring_one_side_only_is_an_error() {
 fn split_that_doesnt_add_up_is_reported_and_falls_back() {
     let (generated, findings) = apply(
         r#"
-        [pin."ba-2026-01-30-3d3806"]
+        [pin."00000000-0000-4000-8000-000000000009"]
         split = [{ account = "expenses:concerts", amount = 600 }]
         "#,
     );
-    let outcome = &generated.outcomes["ba-2026-01-30-3d3806"];
+    let outcome = &generated.outcomes["00000000-0000-4000-8000-000000000009"];
     assert!(matches!(outcome.status, Status::Invalid { .. }), "{:?}", outcome.status);
     let tx = &generated.txs[outcome.ledger[0]];
     assert_eq!(tx.postings[1].account, "expenses:unmatched:bank:a");
@@ -104,8 +104,8 @@ fn priority_resolves_overlap() {
         account = "expenses:coffee"
         "#,
     );
-    assert_eq!(generated.outcomes["lb-2026-01-10-e894d8"].status, Status::Rule("coffee-lunar".into()));
-    assert_eq!(generated.outcomes["ba-2026-01-02-ca8e9e"].status, Status::Rule("coffee".into()));
+    assert_eq!(generated.outcomes["00000000-0000-4000-8000-00000000000a"].status, Status::Rule("coffee-lunar".into()));
+    assert_eq!(generated.outcomes["00000000-0000-4000-8000-000000000001"].status, Status::Rule("coffee".into()));
     assert!(!findings.render(true).contains("ambiguous"));
 }
 
@@ -153,7 +153,7 @@ fn rules_are_read_from_rules_toml_and_every_toml_under_rules() {
 fn duplicates_across_rules_files_name_both_files() {
     let (_, config) = fixture("basic");
     let rule = "[[rule]]\nname = \"x\"\nwhen = { description = \"a\" }\naccount = \"a\"";
-    let pin = "[pin.\"ba-2026-01-02-ca8e9e\"]\naccount = \"a\"";
+    let pin = "[pin.\"00000000-0000-4000-8000-000000000001\"]\naccount = \"a\"";
     let sub = "[[subscription]]\nname = \"s\"\nkind = \"expense\"\naccount = \"a\"\nevery = \"1 month\"\nfirst = 2026-01-01\nprices = [{ from = 2026-01-01, amount = 1 }]";
     for text in [rule, pin, sub] {
         let err = format!(
@@ -175,37 +175,38 @@ fn duplicates_across_rules_files_name_both_files() {
     }
 }
 
+/// Fetched data beside an export. The fetched rows that the export has too
+/// are the export's transactions: they keep their IDs and gain the bank's
+/// reference. One the export doesn't have is a transaction of its own, and
+/// pending ones are skipped. That one has no running balance, so the opening
+/// balance is worked back from the balance the bank reported.
 #[test]
-fn enable_banking_with_cutover_and_snapshots() {
+fn enable_banking_beside_an_export_and_snapshots() {
+    use konter_engine::config::Format;
     let (repo, config) = fixture("eb");
     let build = books::build(&repo, &config, date(2026, 2, 5)).expect("the fixture builds");
     let text = build.findings.render(true);
     assert!(!text.contains("overlap conflict"), "{text}");
     assert!(!text.contains("balance check"), "{text}");
+    assert!(!text.contains("store"), "{text}");
     let a = &build.loaded.sources["bank:a"];
-    // CSV before the cutover keeps the same IDs as with CSV only.
-    assert_eq!(a.txs[0].id, "ba-2026-01-02-ca8e9e");
-    assert_eq!(a.txs[0].format, konter_engine::config::Format::NordeaCsv);
-    // From the cutover on, the API rows are used (pending ones skipped).
-    let api: Vec<_> = a.txs.iter().filter(|t| t.format == konter_engine::config::Format::EnableBanking).collect();
-    assert_eq!(api.len(), 4);
-    assert!(api.iter().all(|t| t.booked >= date(2026, 1, 20)));
-    assert_eq!(api[1].counterparty.as_deref(), Some("DK0000000000000555"));
+    assert_eq!(a.txs.len(), 10);
+    assert_eq!(a.txs[0].id, "00000000-0000-4000-8000-000000000001");
+    assert_eq!(a.txs[0].format, Some(Format::NordeaCsv));
+    let fetched: Vec<_> = a.txs.iter().filter(|t| t.bank_ref.is_some()).collect();
+    assert_eq!(fetched.len(), 5);
+    let (only, both) = fetched.split_last().expect("five of them");
+    assert!(
+        both.iter().all(|t| t.origins.len() == 2 && t.balance_after.is_some() && t.format == Some(Format::NordeaCsv))
+    );
+    assert_eq!(both[2].counterparty.as_deref(), Some("DK0000000000000555"));
+    assert_eq!((only.booked, only.format, only.balance_after), (date(2026, 2, 2), Some(Format::EnableBanking), None));
     // Opening balances worked back from the bank's reported balance.
     assert_eq!(a.opening, Some(rust_decimal::Decimal::from(1050)));
     assert_eq!(build.loaded.sources["other:c"].opening, Some(rust_decimal::Decimal::from(500)));
     assert!(build.journal.contains("assets:bank:a                                 0.00 DKK = 17375.00 DKK"));
     // Foreign amounts stay in DKK, with the original kept as a tag.
     assert!(build.journal.contains("original:-8.05 EUR"), "{}", build.journal);
-}
-
-#[test]
-fn mixing_formats_without_cutover_is_reported() {
-    let (repo, mut config) = fixture("eb");
-    config.sources.get_mut("bank:a").expect("the fixture has bank:a").cutover = None;
-    let build = books::build(&repo, &config, date(2026, 2, 5)).expect("the fixture builds");
-    let text = build.findings.render(true);
-    assert!(text.contains("overlap conflict") && text.contains("Set `cutover`"), "{text}");
 }
 
 #[test]
@@ -239,7 +240,7 @@ fn transfers_before_an_accounts_start_go_to_before_start() {
 
     // Without before_start, the top-up to it on 2026-01-28 is an error.
     let (generated, findings) = apply_with(&config);
-    let top_up = &generated.outcomes["ba-2026-01-28-2299c7"];
+    let top_up = &generated.outcomes["00000000-0000-4000-8000-000000000008"];
     assert!(matches!(top_up.status, Status::Invalid { .. }), "{:?}", top_up.status);
     assert!(findings.render(true).contains("set `before_start`"));
 
@@ -247,7 +248,7 @@ fn transfers_before_an_accounts_start_go_to_before_start() {
     config.sources.get_mut("lunar:b").expect("the fixture has lunar:b").before_start =
         Some("expenses:side-project".into());
     let (generated, findings) = apply_with(&config);
-    let top_up = &generated.outcomes["ba-2026-01-28-2299c7"];
+    let top_up = &generated.outcomes["00000000-0000-4000-8000-000000000008"];
     assert_eq!(top_up.status, Status::Rule("top-up".into()));
     let tx = &generated.txs[top_up.ledger[0]];
     assert_eq!(tx.postings[1].account, "expenses:side-project");
@@ -274,18 +275,21 @@ fn gaps_rank_by_money_and_spot_own_transfers() {
     );
     let loaded = load::all_sources(&repo, &config, &mut Findings::default()).expect("the fixture's data loads");
     let all = gaps::gaps(&config, &loaded, &generated, &Filter::default());
-    let order: Vec<(&str, &str, String)> =
-        all.groups.iter().map(|g| (g.source, g.txs[0].description.as_str(), g.flow.gross().to_string())).collect();
+    let order: Vec<(&str, &str, String)> = all
+        .groups
+        .iter()
+        .map(|g| (g.source, g.txs[0].description.as_str(), g.flow.gross().normalize().to_string()))
+        .collect();
     let expected = [
-        ("bank:a", "SALARY", "10000.00"),
-        ("bank:a", "Concert tickets", "1200.00"),
-        ("bank:a", "Savings", "1000.00"),
-        ("bank:a", "Insurance", "900.00"),
-        ("bank:a", "Top up", "500.00"),
-        ("lunar:b", "Overførsel", "500.00"),
-        ("bank:a", "Charge", "100.00"),
-        ("bank:a", "Refund", "100.00"),
-        ("bank:a", "Mystery", "25.00"),
+        ("bank:a", "SALARY", "10000"),
+        ("bank:a", "Concert tickets", "1200"),
+        ("bank:a", "Savings", "1000"),
+        ("bank:a", "Insurance", "900"),
+        ("bank:a", "Top up", "500"),
+        ("lunar:b", "Overførsel", "500"),
+        ("bank:a", "Charge", "100"),
+        ("bank:a", "Refund", "100"),
+        ("bank:a", "Mystery", "25"),
     ];
     let expected: Vec<(&str, &str, String)> = expected.iter().map(|&(s, d, a)| (s, d, a.to_string())).collect();
     assert_eq!(order, expected);
@@ -414,10 +418,9 @@ prices = [{ from = 2026-01-01, amount = 1000 }]
         let tx = &generated.txs[generated.outcomes[id].ledger[0]];
         tx.tags.iter().filter(|(k, _)| k == "pays").map(|(_, v)| v.as_str()).collect::<Vec<_>>()
     };
-    assert_eq!(tagged("ba-2026-01-28-2299c7"), ["pocket-money"]);
-    let arrival =
-        generated.outcomes.keys().find(|id| id.starts_with("lb-2026-01-29")).expect("the arrival on 29 January");
-    assert!(tagged(arrival).is_empty());
+    assert_eq!(tagged("00000000-0000-4000-8000-000000000008"), ["pocket-money"]);
+    // The arrival on 29 January.
+    assert!(tagged("00000000-0000-4000-8000-00000000000b").is_empty());
 
     // The forecast moves the money from the first due date that isn't paid.
     let forecast = konter_engine::subscriptions::forecast(&config, &rules.subscriptions, &states, as_of)
@@ -449,7 +452,7 @@ prices = [{ from = 2026-01-01, amount = 300 }]
     assert!(text.contains("pocket-money: 100.00 DKK owed, unpaid since 2026-02-15"), "{text}");
 
     // A transfer subscription is paid by transfers, not by `subscription =`.
-    let pin = "[pin.\"ba-2026-01-28-2299c7\"]\nsubscription = \"pocket-money\"\n";
+    let pin = "[pin.\"00000000-0000-4000-8000-000000000008\"]\nsubscription = \"pocket-money\"\n";
     let error = subscriptions_with(&format!("{subs}\n{pin}"), date(2026, 2, 25)).err().expect("this is refused");
     assert!(error.contains("is a transfer subscription"), "{error}");
     // Both ends must be sources.
@@ -472,10 +475,10 @@ first = 2026-01-01
 variable = true
 prices = [{ from = 2026-01-01, amount = 40 }]
 
-[pin."ba-2026-01-02-ca8e9e"]
+[pin."00000000-0000-4000-8000-000000000001"]
 subscription = "power"
 
-[pin."ba-2026-01-20-b7634b"]
+[pin."00000000-0000-4000-8000-000000000007"]
 subscription = "power"
 "#;
     let due = |generated: &engine::Generated| {
@@ -539,11 +542,11 @@ fn apply_with_fixture_rules(more: &str) -> (engine::Generated, Findings) {
 fn later_keeps_a_transaction_unmatched_without_counting_against_the_policy() {
     let (generated, findings) = apply_with_fixture_rules(
         r#"
-        [later."ba-2026-01-20-b7634b"]
+        [later."00000000-0000-4000-8000-000000000007"]
         note = "no idea yet"
         "#,
     );
-    let outcome = &generated.outcomes["ba-2026-01-20-b7634b"];
+    let outcome = &generated.outcomes["00000000-0000-4000-8000-000000000007"];
     assert_eq!(outcome.status, Status::Later(Some("no idea yet".into())));
     let tx = &generated.txs[outcome.ledger[0]];
     assert_eq!(tx.postings[1].account, "expenses:unmatched:bank:a");
@@ -558,26 +561,32 @@ fn later_keeps_a_transaction_unmatched_without_counting_against_the_policy() {
 fn later_on_a_transaction_that_is_mapped_or_missing_is_reported() {
     let (generated, findings) = apply_with_fixture_rules(
         r#"
-        [later."ba-2026-01-15-64ffb9"]
-        [later."ba-2026-01-31-000001"]
-        [later."lb-2026-01-10-e894d8"]
+        [later."00000000-0000-4000-8000-000000000005"]
+        [later."00000000-0000-4000-8000-fffffffffffe"]
+        [later."00000000-0000-4000-8000-00000000000a"]
         "#,
     );
     let text = findings.render(true);
     // Pinned (ignored): the mark is stale, and the pin wins.
-    assert_eq!(generated.outcomes["ba-2026-01-15-64ffb9"].status, Status::Pin);
-    assert!(text.contains(r#"later "ba-2026-01-15-64ffb9" (test.toml): mapped by a pin; remove the mark"#), "{text}");
+    assert_eq!(generated.outcomes["00000000-0000-4000-8000-000000000005"].status, Status::Pin);
+    assert!(
+        text.contains(r#"later "00000000-0000-4000-8000-000000000005" (test.toml): mapped by a pin; remove the mark"#),
+        "{text}"
+    );
     // No such transaction.
-    assert!(text.contains(r#"later "ba-2026-01-31-000001" (test.toml): no such transaction"#), "{text}");
+    assert!(
+        text.contains(r#"later "00000000-0000-4000-8000-fffffffffffe" (test.toml): no such transaction"#),
+        "{text}"
+    );
     // Ambiguous stays an error: a mark can't hide a problem in the rules.
-    assert!(matches!(generated.outcomes["lb-2026-01-10-e894d8"].status, Status::Ambiguous(_)));
+    assert!(matches!(generated.outcomes["00000000-0000-4000-8000-00000000000a"].status, Status::Ambiguous(_)));
     assert!(text.contains("1 transactions match several rules of equal priority"), "{text}");
 }
 
 #[test]
 fn later_marks_are_unique_across_files() {
     let (_, config) = fixture("basic");
-    let mark = r#"[later."ba-2026-01-20-b7634b"]"#;
+    let mark = r#"[later."00000000-0000-4000-8000-000000000007"]"#;
     let err = Rules::from_files([("a.toml", mark), ("b.toml", mark)], &config)
         .expect_err("the same mark in two files is refused");
     assert!(format!("{err:#}").contains("defined in both a.toml and b.toml"), "{err:#}");
@@ -605,7 +614,7 @@ fn digest_lists_new_transactions_and_what_needs_attention() {
     let digest = konter_diagnostics::digest::digest(&build);
     let ids: Vec<&str> = digest.items.iter().map(|i| i.tx.id.as_str()).collect();
     // The ambiguous Lunar coffee is an error in the rules, listed below instead.
-    assert_eq!(ids, ["ba-2026-01-20-b7634b"]);
+    assert_eq!(ids, ["00000000-0000-4000-8000-000000000007"]);
     let text = digest.text();
     assert!(text.starts_with("1 new transaction to map:\n1. 2026-01-20  -25.00 DKK  Mystery\n   bank:a\n"), "{text}");
     assert!(text.contains("Needs attention:\n✗ ambiguous: 1 transactions match several rules"), "{text}");
@@ -614,14 +623,14 @@ fn digest_lists_new_transactions_and_what_needs_attention() {
     assert!(!text.contains("not mapped"), "{text}");
     let json = digest.json();
     assert_eq!(json["transactions"][0]["number"], 1);
-    assert_eq!(json["transactions"][0]["id"], "ba-2026-01-20-b7634b");
+    assert_eq!(json["transactions"][0]["id"], "00000000-0000-4000-8000-000000000007");
     assert_eq!(json["transactions"][0]["amount"], "-25.00");
     assert_eq!(json["findings"][0]["severity"], "error");
 }
 
 #[test]
 fn digest_leaves_out_transactions_marked_later() {
-    let build = build_with(r#"[later."ba-2026-01-20-b7634b"]"#);
+    let build = build_with(r#"[later."00000000-0000-4000-8000-000000000007"]"#);
     let digest = konter_diagnostics::digest::digest(&build);
     assert!(digest.items.is_empty());
     assert!(digest.text().starts_with("Needs attention:\n"), "{}", digest.text());

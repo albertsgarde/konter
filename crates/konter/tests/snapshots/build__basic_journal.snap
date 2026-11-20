@@ -35,42 +35,42 @@ account income:salary
     assets:receivable:salary                  10000.00 DKK
     income:salary                            -10000.00 DKK
 
-2026-01-02 Coffee Shop  ; bank-id:ba-2026-01-02-ca8e9e, rule:coffee
+2026-01-02 Coffee Shop  ; bank-id:00000000-0000-4000-8000-000000000001, rule:coffee
     assets:bank:a                               -50.00 DKK = 1000.00 DKK
     expenses:coffee                              50.00 DKK
 
-2026-01-02 Salary  ; bank-id:ba-2026-01-02-e5da1d, rule:salary, employer:acme, subscription:salary
+2026-01-02 Salary  ; bank-id:00000000-0000-4000-8000-000000000002, rule:salary, employer:acme, subscription:salary
     ; bank: "SALARY"
     assets:bank:a                             10000.00 DKK = 11000.00 DKK
     assets:receivable:salary                 -10000.00 DKK
 
-2026-01-05 Savings  ; bank-id:ba-2026-01-05-65889f, rule:savings
+2026-01-05 Savings  ; bank-id:00000000-0000-4000-8000-000000000003, rule:savings
     assets:bank:a                             -1000.00 DKK = 10000.00 DKK
     assets:bank:savings                        1000.00 DKK
 
-2026-01-10 Insurance (prepaid)  ; bank-id:ba-2026-01-10-58c981, rule:pin
+2026-01-10 Insurance (prepaid)  ; bank-id:00000000-0000-4000-8000-000000000004, rule:pin
     assets:bank:a                              -900.00 DKK = 9100.00 DKK
     assets:prepaid                              900.00 DKK
 
-2026-01-10 Coffee Shop  ; bank-id:lb-2026-01-10-e894d8, rule:unmatched
+2026-01-10 Coffee Shop  ; bank-id:00000000-0000-4000-8000-00000000000a, rule:unmatched
     ; not mapped yet
     assets:bank:b                               -30.00 DKK = 20.00 DKK
     expenses:unmatched:lunar:b                   30.00 DKK
 
-2026-01-20 Mystery  ; bank-id:ba-2026-01-20-b7634b, rule:unmatched
+2026-01-20 Mystery  ; bank-id:00000000-0000-4000-8000-000000000007, rule:unmatched
     ; not mapped yet
     assets:bank:a                               -25.00 DKK = 9075.00 DKK
     expenses:unmatched:bank:a                    25.00 DKK
 
-2026-01-28 Top up  ; bank-id:ba-2026-01-28-2299c7, rule:top-up, transfer:lunar:b, transfer-pair:lb-2026-01-29-e0233f
+2026-01-28 Top up  ; bank-id:00000000-0000-4000-8000-000000000008, rule:top-up, transfer:lunar:b, transfer-pair:00000000-0000-4000-8000-00000000000b
     assets:bank:a                              -500.00 DKK = 8575.00 DKK
     assets:transfers                            500.00 DKK
 
-2026-01-29 Overførsel  ; bank-id:lb-2026-01-29-e0233f, rule:from-bank, transfer:bank:a, transfer-pair:ba-2026-01-28-2299c7
+2026-01-29 Overførsel  ; bank-id:00000000-0000-4000-8000-00000000000b, rule:from-bank, transfer:bank:a, transfer-pair:00000000-0000-4000-8000-000000000008
     assets:bank:b                               500.00 DKK = 520.00 DKK
     assets:transfers                           -500.00 DKK
 
-2026-01-30 Concert tickets  ; bank-id:ba-2026-01-30-3d3806, rule:pin
+2026-01-30 Concert tickets  ; bank-id:00000000-0000-4000-8000-000000000009, rule:pin
     ; A friend owes me for one
     assets:bank:a                             -1200.00 DKK = 7375.00 DKK
     expenses:concerts                           600.00 DKK
@@ -80,6 +80,6 @@ account income:salary
     assets:receivable:salary                  10000.00 DKK
     income:salary                            -10000.00 DKK
 
-2026-12-31 Insurance 2026  ; bank-id:ba-2026-01-10-58c981, rule:pin
+2026-12-31 Insurance 2026  ; bank-id:00000000-0000-4000-8000-000000000004, rule:pin
     assets:prepaid                             -900.00 DKK
     expenses:insurance                          900.00 DKK

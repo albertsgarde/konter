@@ -161,6 +161,9 @@ enum Command {
         #[arg(long)]
         from: Option<Date>,
     },
+    /// Read the raw files in data/ that the store of transactions hasn't read
+    /// into it. `fetch` and `add-export` do this themselves.
+    Store,
     /// Add a raw export file to data/ and check it against existing data.
     AddExport {
         file: PathBuf,
@@ -250,6 +253,12 @@ fn run() -> Result<ExitCode> {
         Command::Link { bank, days, start, finish } => link(config, &bank, days, start, finish),
         Command::Session { bank } => session(&bank),
         Command::Fetch { source, from } => fetch_all(repo, config, source.as_deref(), from),
+        Command::Store => {
+            let mut findings = Findings::default();
+            store::update(repo, config, &mut findings);
+            write!(Stdout, "{}", findings.render(false))?;
+            Ok(exit_code(&findings, false))
+        }
         Command::Init { .. } => unreachable!("init is handled before the books are found"),
     }
 }
@@ -565,10 +574,8 @@ fn write_site(repo: &Repo, config: &Config, build: &konter_engine::pipeline::Bui
         (Page::Income, "Income per account and month.".to_string()),
         (Page::Gaps, gaps.headline(currency)),
     ];
-    let to_settle = match store::table(repo) {
-        Ok(table) => konter_diagnostics::unsettled::html(&table, &store::conflicting_copies(repo, config, &table)),
-        Err(e) => konter_diagnostics::unsettled::unread_html(&format!("{e:#}")),
-    };
+    let table = store::table(repo)?;
+    let to_settle = konter_diagnostics::unsettled::html(&table, &store::conflicting_copies(repo, config, &table));
     let home = site::Home {
         subtitle: &format!("As of {as_of}"),
         unmapped: &format!("{} {currency}", gaps.unmapped_money()),
@@ -658,7 +665,7 @@ fn print_transaction(t: &BankTransaction) -> Result<()> {
     opt("cp. name", t.counterparty_name.clone())?;
     opt("balance after", t.balance_after.map(fmt_num))?;
     opt("bank ref", t.bank_ref.clone())?;
-    writeln!(Stdout, "  raw ({}):", t.format)?;
+    writeln!(Stdout, "  raw ({}):", t.format.map_or_else(|| "its file can't be read".to_owned(), |f| f.to_string()))?;
     for (k, v) in &t.raw {
         writeln!(Stdout, "    {k:<15} {v:?}")?;
     }
@@ -752,8 +759,11 @@ fn add_export(
     writeln!(Stdout, "recorded in data/MANIFEST\n")?;
 
     let mut findings = Findings::default();
-    load::source(repo, config, &source_name, &mut findings)?;
-    store::update(repo, config, &mut findings);
+    // The source is checked as the table has it. A table that can't be read
+    // is reported, and the file is added all the same.
+    if store::update(repo, config, &mut findings) {
+        load::source(repo, config, &source_name, &mut findings)?;
+    }
     write!(Stdout, "{}", findings.render(false))?;
     Ok(exit_code(&findings, false))
 }
@@ -912,6 +922,8 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<&str>, from: Option<Date
     let client = fetch::Client::new(&settings)?;
     let mut findings = Findings::default();
     let mut fetched_any = false;
+    // Whether the store has been brought up to date with a file added here.
+    let mut stored = false;
     for (name, source) in &config.sources {
         if only.is_some_and(|o| o != name) || !source.formats.contains(&Format::EnableBanking) {
             continue;
@@ -935,13 +947,13 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<&str>, from: Option<Date
             findings.error("fetch", format!("{name}: no linked account matches its number/IBAN"));
             continue;
         };
-        // The earlier fetches. Their rows may be represented by CSV copies
-        // after merging, so look at the files.
-        let existing = load::source(repo, config, name, &mut Findings::default())?;
-        let fetches = || existing.files.iter().filter(|f| f.rel.ends_with(".json"));
+        let dir = Config::data_dir(source).context("source has no data directory")?;
+        // The earlier fetches, as their files have them: data is fetched
+        // whatever state the store's table is in.
+        let fetches = earlier_fetches(repo, config, name, &dir)?;
         // Overlap the previous fetch by 30 days, so a re-fetch can be checked.
         let date_from = from.unwrap_or_else(|| {
-            let last = fetches().filter_map(|f| f.last).max();
+            let last = fetches.iter().flat_map(|f| &f.rows).map(|t| t.booked).max();
             last.map_or_else(|| config.source_start(source), |d| d.saturating_sub(jiff::Span::new().days(30)))
         });
         writeln!(Stdout, "{name}: fetching from {date_from} …")?;
@@ -957,13 +969,13 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<&str>, from: Option<Date
             "pages": pages,
             "balances": balances,
         });
-        let dir = Config::data_dir(source).context("source has no data directory")?;
         // Don't store a fetch that adds nothing, so fetching often is harmless.
-        let new = booked_refs(&doc).difference(&stored_refs(repo, config, name, &dir)?).count();
+        let stored_refs = fetches.iter().flat_map(|f| &f.rows).filter_map(|t| t.bank_ref.clone()).collect();
+        let new = booked_refs(&doc).difference(&stored_refs).count();
         let unreferenced = booked_refs_missing(&doc);
         // ...unless the last stored fetch is old: storing one now and then
         // records how far the data reaches, even for a quiet account.
-        let last_fetch = fetches().filter_map(|f| f.exported).max();
+        let last_fetch = fetches.iter().filter_map(|f| f.exported).max();
         let recent = last_fetch.is_some_and(|d| konter_engine::dates::days_between(today(), d) <= 30);
         if new == 0 && unreferenced == 0 && recent {
             writeln!(Stdout, "  nothing new")?;
@@ -980,13 +992,19 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<&str>, from: Option<Date
         manifest.save(&repo.manifest())?;
         drop(lock);
         writeln!(Stdout, "  wrote data/{rel}")?;
-        load::source(repo, config, name, &mut findings)?;
+        stored = true;
+        if store::update(repo, config, &mut findings) {
+            load::source(repo, config, name, &mut findings)?;
+        }
         fetched_any = true;
     }
     if !fetched_any && !findings.has_errors() {
         findings.warn("fetch", "nothing to fetch: no source has \"enable-banking\" in its formats");
     }
-    store::update(repo, config, &mut findings);
+    // With nothing new to read, this still reads what the table lacks.
+    if !stored {
+        store::update(repo, config, &mut findings);
+    }
     write!(Stdout, "\n{}", findings.render(false))?;
     Ok(exit_code(&findings, false))
 }
@@ -1014,14 +1032,13 @@ fn booked_refs_missing(doc: &serde_json::Value) -> usize {
     booked_transactions(doc).filter(|t| t["entry_reference"].as_str().is_none_or(|r| r == "0")).count()
 }
 
-/// Bank references in the source's earlier fetches.
-fn stored_refs(repo: &Repo, config: &Config, name: &str, dir: &str) -> Result<std::collections::BTreeSet<String>> {
-    let mut refs = std::collections::BTreeSet::new();
+/// The source's earlier fetches: the fetched files in its directory, parsed.
+fn earlier_fetches(repo: &Repo, config: &Config, name: &str, dir: &str) -> Result<Vec<sources::RawFile>> {
+    let mut fetches = Vec::new();
     for rel in manifest::raw_files(repo)? {
         if rel.starts_with(&format!("{dir}/")) && rel.ends_with(".json") {
-            let file = load::raw_file(repo, config, name, &rel)?;
-            refs.extend(file.rows.into_iter().filter_map(|t| t.bank_ref));
+            fetches.push(load::raw_file(repo, config, name, &rel)?);
         }
     }
-    Ok(refs)
+    Ok(fetches)
 }

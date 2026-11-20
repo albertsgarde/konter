@@ -12,8 +12,8 @@
 //! and a copy that says something else than its transaction is noted on it
 //! (`conflicts`), both for a person to settle.
 //!
-//! Nothing builds from the table yet: the books still come from merging the
-//! raw files (`sources::merge`).
+//! The books are built from the table (`sources::stored`): the raw files are
+//! where its rows came from.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -250,6 +250,9 @@ impl Stored {
         ] = *cells;
         if account.is_empty() {
             bail!("a transaction has no account");
+        }
+        if sources.is_empty() {
+            bail!("a transaction has no place it was read from in `sources`");
         }
         Ok(Stored {
             id: TransactionId::parse(id)?,
@@ -530,6 +533,28 @@ impl Table {
             row.maybe_same_as = None;
         }
         Ok(())
+    }
+
+    /// Every row, joined to another or not.
+    pub fn rows(&self) -> impl Iterator<Item = &Stored> {
+        self.rows.values()
+    }
+
+    /// The transaction a build uses for the row `id`: the one it has been
+    /// joined to, and, for a row we aren't sure of, the one it may be. Until
+    /// a person settles such a row it counts as that transaction, which is
+    /// what it mostly turns out to be; where the bank gives a running
+    /// balance, the balance shows it when that is wrong.
+    pub fn stands_for(&self, id: &TransactionId) -> Option<&Stored> {
+        let mut row = self.resolve(id)?;
+        // No longer than the table, should rows that may be each other form a ring.
+        for _ in 0..self.rows.len() {
+            match row.maybe_same_as.as_ref().and_then(|other| self.resolve(other)) {
+                Some(other) => row = other,
+                None => return Some(row),
+            }
+        }
+        self.resolve(id)
     }
 
     /// The transactions: every row that hasn't been joined to another.

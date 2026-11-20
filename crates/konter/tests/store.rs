@@ -11,7 +11,8 @@ const TABLE: &str = "store/bank-transactions.csv";
 const NORDEA_DIR: &str = "data/nordea/1234567890";
 const LUNAR: &str = "data/lunar/555/statement.csv";
 
-/// A fresh copy of the basic fixture.
+/// A fresh copy of the basic fixture, without its store: the raw files are
+/// in data/ and nothing has read them yet.
 fn scratch(name: &str) -> PathBuf {
     fn copy(from: &Path, to: &Path) {
         std::fs::create_dir_all(to).expect("the folder is made");
@@ -28,6 +29,7 @@ fn scratch(name: &str) -> PathBuf {
     let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("store").join(name);
     let _ = std::fs::remove_dir_all(&root);
     copy(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic"), &root);
+    std::fs::remove_dir_all(root.join("store")).expect("the fixture's store is removed");
     root
 }
 
@@ -46,10 +48,15 @@ fn add(root: &Path, file: &Path, source: Option<&str>) -> Output {
     command.output().expect("konter runs")
 }
 
+/// `konter build`.
+fn build(root: &Path) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_konter"));
+    command.arg("--root").arg(root).args(["build", "--as-of", "2026-02-15"]).output().expect("konter runs")
+}
+
 /// The site's front page after a build.
 fn front_page(root: &Path) -> String {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_konter"));
-    command.arg("--root").arg(root).args(["build", "--as-of", "2026-02-15"]).output().expect("konter runs");
+    build(root);
     std::fs::read_to_string(root.join("build/index.html")).expect("the front page is read")
 }
 
@@ -135,11 +142,12 @@ fn the_table_follows_the_raw_files_and_ids_stay() {
         .collect();
     assert_eq!(files, ["bank-transactions.csv"]);
 
-    // The front page says how much money is unmapped (the mystery, the
-    // coffee, the books, and the stray file's row, which a build does read)
-    // and that the table has nothing to settle.
+    // The front page says how much money is unmapped and that the table has
+    // nothing to settle. The fixture's pins name the IDs of the fixture's
+    // own store, and this copy made its table anew, so what they map is
+    // unmapped here too: 2,430 in all.
     let page = front_page(&root);
-    assert!(page.contains("Unmapped: <a href=\"gaps.html\"><strong>131 DKK</strong></a>"), "{page}");
+    assert!(page.contains("Unmapped: <a href=\"gaps.html\"><strong>2,430 DKK</strong></a>"), "{page}");
     assert!(page.contains("<h2>Bank transactions to settle</h2>\n<p class=\"muted\">Nothing to settle.</p>"), "{page}");
 }
 
@@ -225,7 +233,7 @@ fn what_the_reader_isnt_sure_of_is_marked_and_warned_of() {
 /// The raw file is safe in data/ before the table is looked at, so a table
 /// that can't be read is an error to report, with the file added all the
 /// same; and the table isn't replaced by one made from scratch, which would
-/// give every transaction a new ID.
+/// give every transaction a new ID. The books can't be built without it.
 #[test]
 fn a_table_that_cant_be_read_is_reported_and_left_alone() {
     let root = scratch("broken");
@@ -240,15 +248,14 @@ fn a_table_that_cant_be_read_is_reported_and_left_alone() {
     );
     assert_eq!(table(&root), "not,a,table\n");
     assert!(root.join(NORDEA_DIR).join("Konto 1234567890 - 2026-02-05 10.00.00.csv").is_file());
-    // The front page says so too, where what's left to settle would be.
-    let page = front_page(&root);
+    let built = build(&root);
+    assert_eq!(built.status.code(), Some(2), "{}", text(&built));
     assert!(
-        page.contains(
-            "<h2>Bank transactions to settle</h2>\n<p>The store of transactions can't be read: reading \
-             store/bank-transactions.csv: the table's columns are [&quot;not&quot;,"
-        ),
-        "{page}"
+        text(&built).contains("error: reading store/bank-transactions.csv: the table's columns are [\"not\","),
+        "{}",
+        text(&built)
     );
+    assert!(!root.join("ledger").exists());
 }
 
 /// A raw file that can't be parsed is left out and named, and the others are read.
@@ -281,4 +288,33 @@ fn a_row_we_arent_sure_of_alone_is_listed() {
     let page = front_page(&root);
     assert!(page.contains("<h3>May be a transaction the table already had (1)</h3>"), "{page}");
     assert!(!page.contains("Nothing to settle") && !page.contains("Copies that say something else"), "{page}");
+}
+
+/// The books are built from the table. A raw file it hasn't read is an
+/// error that names the file, with the books built without its rows, and
+/// `konter store` reads it.
+#[test]
+fn a_build_names_the_raw_files_the_table_hasnt_read() {
+    let root = scratch("unread");
+    let built = build(&root);
+    assert_eq!(built.status.code(), Some(1), "{}", text(&built));
+    for line in [
+        "bank:a: 1 raw files haven't been read into the table",
+        "data/nordea/1234567890/Konto 1234567890 - 2026-01-31 10.00.00.csv",
+        "lunar:b: 1 raw files haven't been read into the table",
+        "→ the books are built without their rows; `konter store` reads the ones data/MANIFEST lists",
+    ] {
+        assert!(text(&built).contains(line), "{line}\n{}", text(&built));
+    }
+    let mut command = Command::new(env!("CARGO_BIN_EXE_konter"));
+    let stored = command.arg("--root").arg(&root).arg("store").output().expect("konter runs");
+    assert!(stored.status.success(), "{}", text(&stored));
+    assert!(
+        text(&stored).contains("store/bank-transactions.csv: 11 transactions, 11 of them new, from 2 files"),
+        "{}",
+        text(&stored)
+    );
+    let built = build(&root);
+    assert!(!text(&built).contains("haven't been read"), "{}", text(&built));
+    assert!(text(&built).contains("bank:a: 9 transactions 2026-01-02 … 2026-01-30 from 1 files"), "{}", text(&built));
 }

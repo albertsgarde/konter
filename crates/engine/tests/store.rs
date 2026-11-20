@@ -376,6 +376,7 @@ fn line(n: u8, changes: &[(&str, &str)]) -> String {
             "currency" => "DKK".to_owned(),
             "text" => "Groceries".to_owned(),
             "balance" => "100".to_owned(),
+            "sources" => format!("nordea/1234567890/export.csv:{}", u32::from(n) + 1),
             _ => String::new(),
         })
         .collect();

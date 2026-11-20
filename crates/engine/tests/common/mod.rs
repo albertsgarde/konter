@@ -15,6 +15,7 @@ use konter_engine::manual::Manual;
 use konter_engine::pipeline::{self, Build};
 use konter_engine::rules::Rules;
 use konter_engine::sources::{self, Loaded};
+use konter_engine::store::{Table, TransactionId};
 use rust_decimal::Decimal;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -68,26 +69,62 @@ pub fn try_build_with(
     as_of: Date,
 ) -> anyhow::Result<Build> {
     let mut findings = Findings::default();
+    let loaded = load(config, files, &mut findings);
+    let quoted: Vec<String> = accounts.iter().map(|a| format!("{a:?}")).collect();
+    let manual = Manual::parse(&format!("accounts = [{}]", quoted.join(", ")), transactions)?;
+    pipeline::assemble(config, rules, loaded, &manual, as_of, findings)
+}
+
+/// The ID of the `n`-th transaction a test's files add to the store, counted
+/// from 1: the files are read in the order given, and each file's rows from
+/// the oldest.
+pub fn id(n: u128) -> TransactionId {
+    TransactionId::from_random(n.to_be_bytes())
+}
+
+/// IDs for a store in a test: [`id`]`(1)`, `id(2)` and so on.
+pub fn ids() -> impl FnMut() -> TransactionId {
+    let mut n = 0;
+    move || {
+        n += 1;
+        id(n)
+    }
+}
+
+/// The bank data of the books, the way konter-repo loads it: the files are
+/// read into a store's table in the order given, and each source's
+/// transactions are taken from it. `files`: (source, path relative to data/, text).
+pub fn load(config: &Config, files: &[(&str, &str, &str)], findings: &mut Findings) -> Loaded {
+    load_settled(config, files, findings, |_| {})
+}
+
+/// [`load`], with `settle` changing the table once the files are read, as a
+/// person does who joins two rows.
+pub fn load_settled(
+    config: &Config,
+    files: &[(&str, &str, &str)],
+    findings: &mut Findings,
+    settle: impl FnOnce(&mut Table),
+) -> Loaded {
     let mut raw: BTreeMap<&str, Vec<sources::RawFile>> = BTreeMap::new();
     for (name, source) in &config.sources {
         if source.imported() {
             raw.insert(name, Vec::new());
         }
     }
+    let (mut table, mut mint) = (Table::default(), ids());
     for (source, rel, text) in files {
-        raw.get_mut(source)
-            .expect("the file is for a source in the config")
-            .push(sources::parse_raw(config, source, rel, text, None).expect("the test's bank file parses"));
+        let file = sources::parse_raw(config, source, rel, text, None).expect("the test's bank file parses");
+        table.read(source, &file.rows, &mut mint);
+        raw.get_mut(source).expect("the file is for a source in the config").push(file);
     }
-    let loaded = Loaded {
+    settle(&mut table);
+    Loaded {
         sources: raw
             .into_iter()
-            .map(|(name, files)| (name.to_string(), sources::merge_source(config, name, files, &mut findings)))
+            .map(|(name, files)| (name.to_string(), sources::stored_source(config, name, &table, files, findings)))
             .collect(),
-    };
-    let quoted: Vec<String> = accounts.iter().map(|a| format!("{a:?}")).collect();
-    let manual = Manual::parse(&format!("accounts = [{}]", quoted.join(", ")), transactions)?;
-    pipeline::assemble(config, rules, loaded, &manual, as_of, findings)
+    }
 }
 
 /// A Nordea CSV export of account 1234567890, as the bank writes it (newest

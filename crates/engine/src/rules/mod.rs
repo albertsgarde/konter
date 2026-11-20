@@ -16,6 +16,7 @@ use condition::RawCondition;
 
 use crate::config::Config;
 use crate::dates::ConfigDate;
+use crate::findings::Findings;
 use crate::money::{Amount, parse_plain};
 use crate::subscriptions::{Flow, RawSubscription, Subscription};
 
@@ -323,17 +324,65 @@ fn defined_twice(what: &str, first: &str, second: &str) -> String {
     }
 }
 
+/// Whether `id` has the form of a transaction's ID in the store.
 fn is_pin_id(id: &str) -> bool {
-    // <prefix>-YYYY-MM-DD-xxxxxx
-    let parts: Vec<&str> = id.split('-').collect();
-    parts.len() == 5
-        && crate::config::valid_id_prefix(parts[0])
-        && parts[4].len() == 6
-        && parts[4].chars().all(|c| c.is_ascii_hexdigit())
-        && format!("{}-{}-{}", parts[1], parts[2], parts[3]).parse::<jiff::civil::Date>().is_ok()
+    crate::store::TransactionId::parse(id).is_ok()
+}
+
+/// What an ID looks like, for the message about one that isn't.
+const AN_ID: &str = "3f2b8c1e-5d4a-4f6b-9c7d-0a1b2c3d4e5f";
+
+/// Moves the entries of `marks` (pins, or later marks) whose ID means another
+/// transaction to that transaction's ID, and gives back the lines about the
+/// ones that couldn't move because it has one already.
+fn follow<T>(
+    marks: &mut BTreeMap<String, T>,
+    what: &str,
+    id_of: &dyn Fn(&str) -> String,
+    rename: impl Fn(&mut T, &str),
+    file: impl Fn(&T) -> &str,
+) -> Vec<String> {
+    let moved: Vec<(String, String)> =
+        marks.keys().map(|id| (id.clone(), id_of(id))).filter(|(id, now)| id != now).collect();
+    let mut twice = Vec::new();
+    for (id, now) in moved {
+        let Some(mut mark) = marks.remove(&id) else { continue };
+        match marks.get(&now) {
+            Some(other) => twice.push(format!(
+                "{what} {id:?} ({}) is for the transaction {now}, which has one in {}",
+                file(&mark),
+                file(other)
+            )),
+            None => {
+                rename(&mut mark, &now);
+                marks.insert(now, mark);
+            }
+        }
+    }
+    twice
 }
 
 impl Rules {
+    /// Makes the pins and later marks that name a row of the table which
+    /// counts as another transaction (`id_of` gives that one's ID) apply to
+    /// that transaction: a row joined to another keeps what was pinned on it.
+    /// One that can't move, because the transaction has its own, is an error.
+    pub fn follow(&mut self, id_of: &dyn Fn(&str) -> String, findings: &mut Findings) {
+        let mut twice = follow(&mut self.pins, "pin", id_of, |pin, id| id.clone_into(&mut pin.id), |pin| &pin.file);
+        twice.extend(follow(
+            &mut self.later,
+            "later",
+            id_of,
+            |later, id| id.clone_into(&mut later.id),
+            |later| &later.file,
+        ));
+        if !twice.is_empty() {
+            findings
+                .error("pins", format!("{} marks are for a transaction that has one already", twice.len()))
+                .details(twice);
+        }
+    }
+
     pub fn load_str(text: &str, file: &str, config: &Config) -> Result<Rules> {
         Rules::from_files([(file, text)], config)
     }
@@ -393,7 +442,7 @@ impl Rules {
         }
         for (id, output) in raw.pin {
             if !is_pin_id(&id) {
-                bail!("pin {id:?}: not a transaction ID (expected e.g. nl-2025-06-11-7f3a9c)");
+                bail!("pin {id:?}: not a transaction ID (expected e.g. {AN_ID})");
             }
             let output = convert_output(output).with_context(|| format!("pin {id:?}"))?;
             if let Some(old) = self.pins.insert(id.clone(), Pin { id: id.clone(), output, file: file.to_string() }) {
@@ -402,7 +451,7 @@ impl Rules {
         }
         for (id, raw) in raw.later {
             if !is_pin_id(&id) {
-                bail!("later {id:?}: not a transaction ID (expected e.g. nl-2025-06-11-7f3a9c)");
+                bail!("later {id:?}: not a transaction ID (expected e.g. {AN_ID})");
             }
             let later = Later { id: id.clone(), note: raw.note, file: file.to_string() };
             if let Some(old) = self.later.insert(id.clone(), later) {

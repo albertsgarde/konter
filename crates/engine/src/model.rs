@@ -8,7 +8,7 @@ use rust_decimal::Decimal;
 use crate::config::Format;
 
 /// Where a bank transaction was read from.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Origin {
     /// Path relative to `data/`.
     pub file: String,
@@ -19,10 +19,12 @@ pub struct Origin {
 /// One booked bank transaction in the common format (docs/spec.md §4).
 #[derive(Clone, Debug)]
 pub struct BankTransaction {
-    /// Stable ID (docs/spec.md §4). Empty until the merge step assigns it.
+    /// Its ID in the store of transactions (docs/spec.md §4). Empty in a row
+    /// of a raw file, which isn't a transaction of the table yet.
     pub id: String,
     pub source: String,
-    pub format: Format,
+    /// The format of the raw file it was read from, if that file can be read.
+    pub format: Option<Format>,
     pub booked: Date,
     pub time: Option<Time>,
     pub value_date: Option<Date>,

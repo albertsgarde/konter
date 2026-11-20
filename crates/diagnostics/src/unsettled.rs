@@ -12,11 +12,6 @@ use konter_engine::store::{Stored, Table};
 
 const HEADING: &str = "<h2>Bank transactions to settle</h2>\n";
 
-/// The section for a table that can't be read, with why.
-pub fn unread_html(why: &str) -> String {
-    format!("{HEADING}<p>The store of transactions can't be read: {}</p>\n", esc(why))
-}
-
 /// The cells that say which transaction a row is: account, date, amount and text.
 fn which(t: &Stored) -> String {
     let text = esc(t.text.as_deref().unwrap_or_default());

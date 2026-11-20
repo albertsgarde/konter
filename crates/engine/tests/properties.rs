@@ -1115,7 +1115,9 @@ fn pin_and_mark(rng: &mut Rng, world: &mut World, wild: bool) {
         }
     }
     if wild && rng.below(4) == 0 {
-        world.rules.push("\n[pin.\"ba-2026-01-31-000000\"]\naccount = \"expenses:gifts\"\n".to_string());
+        world
+            .rules
+            .push("\n[pin.\"00000000-0000-4000-8000-ffffffffffff\"]\naccount = \"expenses:gifts\"\n".to_string());
     }
 }
 

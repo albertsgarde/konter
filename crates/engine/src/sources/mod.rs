@@ -4,6 +4,7 @@ pub mod enable_banking;
 pub mod lunar_csv;
 pub mod merge;
 pub mod nordea_csv;
+pub mod stored;
 
 use std::collections::BTreeMap;
 
@@ -12,6 +13,7 @@ use anyhow::{Context, Result, bail};
 use crate::config::{Config, Format};
 use crate::findings::Findings;
 use crate::model::BankTransaction;
+use crate::store::Table;
 
 pub use merge::SourceData;
 
@@ -108,7 +110,7 @@ fn parse_sidecar(rel: &str, text: &str) -> Result<merge::Snapshot> {
     Ok(merge::Snapshot { date: s.date.0, balance: s.balance.0, file: rel.to_string() })
 }
 
-/// All bank data, merged per source.
+/// All bank data, per source.
 pub struct Loaded {
     pub sources: BTreeMap<String, SourceData>,
 }
@@ -118,8 +120,21 @@ impl Loaded {
         self.sources.values().flat_map(|s| s.txs.iter())
     }
 
+    /// The ID of the transaction that `id` means: its own, or, for a row of
+    /// the table that counts as another transaction, that one's.
+    pub fn id_of<'a>(&'a self, id: &'a str) -> &'a str {
+        self.sources.values().find_map(|s| s.aliases.get(id)).map_or(id, String::as_str)
+    }
+
+    /// The transaction `id` means (see [`Loaded::id_of`]).
     pub fn find(&self, id: &str) -> Option<&BankTransaction> {
+        let id = self.id_of(id);
         self.transactions().find(|t| t.id == id)
+    }
+
+    /// Whether `id` is a transaction of the table from before its source's start.
+    pub fn is_before_start(&self, id: &str) -> bool {
+        self.sources.values().any(|s| s.before_start.contains(id))
     }
 }
 
@@ -139,6 +154,24 @@ fn dir_of(rel: &str) -> &str {
     rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
 }
 
+/// The transactions of one imported source that the table has, and reports
+/// what came of it. `raw`: the source's parsed raw files.
+pub fn stored_source(
+    config: &Config,
+    name: &str,
+    table: &Table,
+    raw: Vec<RawFile>,
+    findings: &mut Findings,
+) -> SourceData {
+    let source = &config.sources[name];
+    if raw.is_empty() {
+        findings.warn("data", format!("{name}: no raw data yet"));
+    }
+    let data = stored::from_table(name, config.source_start(source), table, raw, findings);
+    summarize(name, &data, findings);
+    data
+}
+
 /// Merges the parsed raw files of one imported source, and reports what came of it.
 pub fn merge_source(config: &Config, name: &str, raw: Vec<RawFile>, findings: &mut Findings) -> SourceData {
     let source = &config.sources[name];
@@ -146,6 +179,12 @@ pub fn merge_source(config: &Config, name: &str, raw: Vec<RawFile>, findings: &m
         findings.warn("data", format!("{name}: no raw data yet"));
     }
     let data = merge::merge(name, source, config.source_start(source), raw, findings);
+    summarize(name, &data, findings);
+    data
+}
+
+/// Says in `findings` what a source's data comes to.
+fn summarize(name: &str, data: &SourceData, findings: &mut Findings) {
     if let (Some(first), Some(last)) = (data.first(), data.last()) {
         let opening =
             data.opening.map(|o| format!(", opening balance {}", crate::money::fmt_num(o))).unwrap_or_default();
@@ -163,5 +202,4 @@ pub fn merge_source(config: &Config, name: &str, raw: Vec<RawFile>, findings: &m
             ),
         );
     }
-    data
 }

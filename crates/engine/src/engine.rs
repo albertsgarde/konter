@@ -276,7 +276,7 @@ pub fn generate(config: &Config, rules: &Rules, loaded: &Loaded, findings: &mut 
     balance_snapshots(config, loaded, &mut g, findings);
     pair_transfers(config, loaded, &mapped.legs, &mut g, findings);
     report_outcomes(config, loaded, &g, mapped.ambiguous, mapped.invalid, findings);
-    report_dead_rules(config, rules, &g, &mapped.matched_rules, findings);
+    report_dead_rules(rules, loaded, &g, &mapped.matched_rules, findings);
     report_stale_later(rules, &g, findings);
     g
 }
@@ -638,8 +638,8 @@ fn report_outcomes(
 /// transactions that don't exist. `matched_rules`: the names of the pattern
 /// rules that matched something.
 fn report_dead_rules(
-    config: &Config,
     rules: &Rules,
+    loaded: &Loaded,
     g: &Generated,
     matched_rules: &BTreeSet<&str>,
     findings: &mut Findings,
@@ -651,15 +651,7 @@ fn report_dead_rules(
         .map(|r| format!("rule {:?} ({})", r.name, r.file))
         .collect();
     // An ID for no transaction, except one before its source's start.
-    let missing = |id: &str| {
-        if g.outcomes.contains_key(id) {
-            return false;
-        }
-        let prefix = id.split('-').next().unwrap_or("");
-        let date: Option<jiff::civil::Date> = id.get(prefix.len() + 1..prefix.len() + 11).and_then(|d| d.parse().ok());
-        let source = config.sources.values().find(|s| s.id_prefix.as_deref() == Some(prefix));
-        !matches!((source, date), (Some(s), Some(d)) if d < config.source_start(s))
-    };
+    let missing = |id: &str| !g.outcomes.contains_key(id) && !loaded.is_before_start(id);
     for pin in rules.pins.values().filter(|p| missing(&p.id)) {
         dead.push(format!("pin {:?} ({}): no such transaction", pin.id, pin.file));
     }
@@ -698,7 +690,7 @@ mod tests {
         BankTransaction {
             id: "nb-2026-01-01-000000".into(),
             source: "test:a".into(),
-            format: crate::config::Format::EnableBanking,
+            format: Some(crate::config::Format::EnableBanking),
             booked: jiff::civil::date(2026, 1, 1),
             time: None,
             value_date: None,

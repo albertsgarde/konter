@@ -88,6 +88,11 @@ pub struct SourceData {
     pub snapshots: Vec<Snapshot>,
     pub files: Vec<FileSummary>,
     pub chain_ok: bool,
+    /// The IDs of the table's rows that count as another transaction (joined
+    /// to it, or maybe it and not settled yet), each with that one's ID.
+    pub aliases: BTreeMap<String, String>,
+    /// The IDs of the table's transactions from before the source's start.
+    pub before_start: BTreeSet<String>,
 }
 
 impl SourceData {
@@ -115,7 +120,7 @@ impl SourceData {
     }
 }
 
-fn short(t: &BankTransaction) -> String {
+pub(super) fn short(t: &BankTransaction) -> String {
     format!("{} {:>10} {:?}", t.booked, fmt_num(t.amount), t.description)
 }
 
@@ -285,6 +290,8 @@ pub fn merge(name: &str, source: &Source, start: Date, mut files: Vec<RawFile>, 
         snapshots,
         files: per_file.into_iter().map(|(s, _)| s).collect(),
         chain_ok,
+        aliases: BTreeMap::new(),
+        before_start: BTreeSet::new(),
     }
 }
 
@@ -458,7 +465,7 @@ fn missing(union: &BTreeMap<Key, BankTransaction>, per_file: &[(FileSummary, BTr
 /// Step 3, for transactions that all have a running balance: puts them in the
 /// order the balance chains in, and reports where it doesn't. `occurrences`:
 /// see [`chain`]. Returns them with whether the chain is unbroken.
-fn in_chain_order(
+pub(super) fn in_chain_order(
     name: &str,
     txs: Vec<BankTransaction>,
     occurrences: &[u32],
@@ -693,7 +700,7 @@ mod tests {
         BankTransaction {
             id: String::new(),
             source: "test:a".into(),
-            format: Format::NordeaCsv,
+            format: Some(Format::NordeaCsv),
             booked: d,
             time: None,
             value_date: None,

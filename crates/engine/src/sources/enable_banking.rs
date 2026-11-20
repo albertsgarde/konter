@@ -149,7 +149,7 @@ fn parse_transaction(t: &Value, index: usize, ctx: &FileContext) -> Result<Optio
     Ok(Some(BankTransaction {
         id: String::new(),
         source: ctx.source.clone(),
-        format: Format::EnableBanking,
+        format: Some(Format::EnableBanking),
         booked,
         time: None,
         value_date: date_at(t, &["value_date"])?,

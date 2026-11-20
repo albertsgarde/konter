@@ -46,12 +46,13 @@ pub struct Build {
 /// no state to report, and is an error.
 pub fn assemble(
     config: &Config,
-    rules: Rules,
+    mut rules: Rules,
     loaded: Loaded,
     manual: &Manual,
     as_of: Date,
     mut findings: Findings,
 ) -> Result<Build> {
+    rules.follow(&|id| loaded.id_of(id).to_owned(), &mut findings);
     for (name, source) in &config.sources {
         let data = loaded.sources.get(name);
         if let Some(last) = data.and_then(|d| d.last())

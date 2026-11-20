@@ -309,16 +309,23 @@ fn the_mapping_is_summed_up_for_each_account_with_transactions() {
     assert_eq!(findings(&build, Severity::Ok, "mapping"), [""; 0]);
 }
 
-/// A pin or a later mark for no transaction is dead, unless its ID is from
-/// before its account's start: those transactions are left out on purpose.
+/// A pin or a later mark for no transaction is dead, unless it's for a
+/// transaction from before its account's start: those are in the store, and
+/// left out of the books on purpose.
 #[test]
 fn a_pin_for_a_transaction_before_its_accounts_start_isnt_dead() {
     let config = config(NORDEA);
+    // The export reaches back to the day before the books start.
+    let mut rows = SHOP.to_vec();
+    rows.push(("2025/12/31", "-10,00", "Shop", "1000,00"));
+    let early = common::id(1).to_string();
+    let none = "00000000-0000-4000-8000-ffffffffffff";
     let pin = |id: &str| format!("[pin.{id:?}]\naccount = \"expenses:shop\"\n");
-    let rules = [pin("ba-2025-12-31-abcdef"), pin("ba-2026-01-01-abcdef"), pin("zz-2025-12-31-abcdef")].concat();
-    let build = books(&config, &rules, &SHOP);
+    let rules = [pin(&early), pin(none), format!("[later.{:?}]\n", "00000000-0000-4000-8000-eeeeeeeeeeee")].concat();
+    let build = books(&config, &rules, &rows);
+    assert!(build.loaded.is_before_start(&early) && build.loaded.find(&early).is_none());
     let dead = findings(&build, Severity::Warning, "dead rule").concat();
     assert!(dead.starts_with("2 rules match nothing"), "{dead}");
-    assert!(!dead.contains("ba-2025-12-31-abcdef"), "{dead}");
-    assert!(dead.contains("ba-2026-01-01-abcdef") && dead.contains("zz-2025-12-31-abcdef"), "{dead}");
+    assert!(!dead.contains(&early), "{dead}");
+    assert!(dead.contains(none) && dead.contains("00000000-0000-4000-8000-eeeeeeeeeeee"), "{dead}");
 }

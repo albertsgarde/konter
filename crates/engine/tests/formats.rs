@@ -179,5 +179,5 @@ fn files_and_transactions_are_found_by_where_they_belong() {
     let build = build(&config, rules, &[], &[("bank:a", &rel, &csv)], date(2026, 1, 31));
     let kiosk = &build.loaded.sources["bank:a"].txs[1];
     assert_eq!(build.loaded.find(&kiosk.id).map(|t| t.description.as_str()), Some("Kiosk"));
-    assert!(build.loaded.find("ba-2026-01-31-000000").is_none());
+    assert!(build.loaded.find("00000000-0000-4000-8000-ffffffffffff").is_none());
 }

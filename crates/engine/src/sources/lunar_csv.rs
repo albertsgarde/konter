@@ -43,7 +43,7 @@ pub fn parse(text: &str, ctx: &FileContext) -> Result<Vec<BankTransaction>> {
             Ok(BankTransaction {
                 id: String::new(),
                 source: ctx.source.clone(),
-                format: Format::LunarCsv,
+                format: Some(Format::LunarCsv),
                 booked: parse_dmy_dot(&get(0))?,
                 time: Some(parse_time(&get(1))?),
                 value_date: None,

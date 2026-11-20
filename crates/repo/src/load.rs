@@ -1,5 +1,5 @@
 //! Reading the books' inputs from the repository: the config, the rules, the
-//! raw bank data and the accounts and transactions written by hand. What's done with them is the
+//! store of transactions with the raw bank data, and the accounts and transactions written by hand. What's done with them is the
 //! engine's business; this module only reads.
 
 use std::path::Path;
@@ -13,6 +13,9 @@ use konter_engine::findings::Findings;
 use konter_engine::manual::{self, Manual};
 use konter_engine::rules::Rules;
 use konter_engine::sources::{self, Loaded, RawFile, SourceData};
+use konter_engine::store::Table;
+
+use crate::store;
 
 /// `config/sources.toml`.
 pub fn config(repo: &Repo) -> Result<Config> {
@@ -50,14 +53,22 @@ pub fn raw_file(repo: &Repo, config: &Config, name: &str, rel: &str) -> Result<R
     sources::parse_raw(config, name, rel, &text, sidecar.as_deref())
 }
 
-/// Parses and merges the raw files of one imported source.
+/// One imported source's transactions, from the store's table and the
+/// source's raw files.
 pub fn source(repo: &Repo, config: &Config, name: &str, findings: &mut Findings) -> Result<SourceData> {
-    Ok(source_among(repo, config, name, &manifest::raw_files(repo)?, findings))
+    Ok(source_among(repo, config, name, &store::table(repo)?, &manifest::raw_files(repo)?, findings))
 }
 
-/// Parses and merges the raw files of one imported source, picked from `rels`:
-/// every raw file there is.
-fn source_among(repo: &Repo, config: &Config, name: &str, rels: &[String], findings: &mut Findings) -> SourceData {
+/// One imported source's transactions, from `table` and the source's raw
+/// files, picked from `rels`: every raw file there is.
+fn source_among(
+    repo: &Repo,
+    config: &Config,
+    name: &str,
+    table: &Table,
+    rels: &[String],
+    findings: &mut Findings,
+) -> SourceData {
     let mut raw = Vec::new();
     for rel in sources::files_of(config, name, rels) {
         match raw_file(repo, config, name, rel) {
@@ -67,12 +78,14 @@ fn source_among(repo: &Repo, config: &Config, name: &str, rels: &[String], findi
             }
         }
     }
-    sources::merge_source(config, name, raw, findings)
+    sources::stored_source(config, name, table, raw, findings)
 }
 
-/// Verifies the manifest, parses every raw file and merges each source.
+/// Verifies the manifest, reads the store's table and parses every raw
+/// file, and takes each source's transactions from them.
 pub fn all_sources(repo: &Repo, config: &Config, findings: &mut Findings) -> Result<Loaded> {
     manifest::verify(repo, findings)?;
+    let table = store::table(repo)?;
     let rels = manifest::raw_files(repo)?;
     let orphans = sources::orphans(config, &rels);
     if !orphans.is_empty() {
@@ -81,7 +94,7 @@ pub fn all_sources(repo: &Repo, config: &Config, findings: &mut Findings) -> Res
     let mut loaded = Loaded { sources: Default::default() };
     for (name, source_config) in &config.sources {
         if source_config.imported() {
-            loaded.sources.insert(name.clone(), source_among(repo, config, name, &rels, findings));
+            loaded.sources.insert(name.clone(), source_among(repo, config, name, &table, &rels, findings));
         }
     }
     Ok(loaded)
