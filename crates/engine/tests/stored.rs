@@ -358,3 +358,21 @@ fn a_day_that_doesnt_chain_is_reported_without_trying_every_order() {
     let breaks = found(&findings, Severity::Error, "balance chain").concat();
     assert!(breaks.contains("on 2026-01-05: the day's transactions don't form a chain"), "{breaks}");
 }
+
+/// A source's transactions are those from its start on, the day itself
+/// included. The ones before it are in the table and known by their IDs.
+#[test]
+fn transactions_from_the_start_on_are_in_the_books() {
+    let config = config(NORDEA);
+    let export = nordea_csv(&[
+        ("2026/01/02", "-20,00", "After", "930,00"),
+        ("2026/01/01", "-50,00", "On the day", "950,00"),
+        ("2025/12/31", "-10,00", "Before", "1.000,00"),
+    ]);
+    let (data, findings) = exported(&config, &[(&nordea_rel("2026-01-07 10.00.00"), &export)]);
+    assert!(!findings.has_errors(), "{}", findings.render(true));
+    assert_eq!(descriptions(&data), ["On the day", "After"]);
+    assert_eq!(data.before_start.iter().collect::<Vec<_>>(), [&id(1).to_string()]);
+    assert_eq!(data.opening, Some(1000.into()));
+    assert_eq!((data.files[0].count, data.files[0].first), (2, Some(date(2026, 1, 1))));
+}

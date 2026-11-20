@@ -53,6 +53,14 @@ pub fn raw_file(repo: &Repo, config: &Config, name: &str, rel: &str) -> Result<R
     sources::parse_raw(config, name, rel, &text, sidecar.as_deref())
 }
 
+/// The fetches of source `name` so far: its fetched files, parsed. They are
+/// read as the files have them, whatever the store's table has made of them.
+pub fn fetches(repo: &Repo, config: &Config, name: &str) -> Result<Vec<RawFile>> {
+    let rels = manifest::raw_files(repo)?;
+    let fetched = sources::files_of(config, name, &rels).into_iter().filter(|rel| rel.ends_with(".json"));
+    fetched.map(|rel| raw_file(repo, config, name, rel)).collect()
+}
+
 /// One imported source's transactions, from the store's table and the
 /// source's raw files.
 pub fn source(repo: &Repo, config: &Config, name: &str, findings: &mut Findings) -> Result<SourceData> {

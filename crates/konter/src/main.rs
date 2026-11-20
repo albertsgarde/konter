@@ -922,8 +922,8 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<&str>, from: Option<Date
     let client = fetch::Client::new(&settings)?;
     let mut findings = Findings::default();
     let mut fetched_any = false;
-    // Whether the store has been brought up to date with a file added here.
-    let mut stored = false;
+    // The sources that got a new file.
+    let mut added = Vec::new();
     for (name, source) in &config.sources {
         if only.is_some_and(|o| o != name) || !source.formats.contains(&Format::EnableBanking) {
             continue;
@@ -950,7 +950,7 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<&str>, from: Option<Date
         let dir = Config::data_dir(source).context("source has no data directory")?;
         // The earlier fetches, as their files have them: data is fetched
         // whatever state the store's table is in.
-        let fetches = earlier_fetches(repo, config, name, &dir)?;
+        let fetches = load::fetches(repo, config, name)?;
         // Overlap the previous fetch by 30 days, so a re-fetch can be checked.
         let date_from = from.unwrap_or_else(|| {
             let last = fetches.iter().flat_map(|f| &f.rows).map(|t| t.booked).max();
@@ -992,18 +992,19 @@ fn fetch_all(repo: &Repo, config: &Config, only: Option<&str>, from: Option<Date
         manifest.save(&repo.manifest())?;
         drop(lock);
         writeln!(Stdout, "  wrote data/{rel}")?;
-        stored = true;
-        if store::update(repo, config, &mut findings) {
-            load::source(repo, config, name, &mut findings)?;
-        }
+        added.push(name);
         fetched_any = true;
     }
     if !fetched_any && !findings.has_errors() {
         findings.warn("fetch", "nothing to fetch: no source has \"enable-banking\" in its formats");
     }
-    // With nothing new to read, this still reads what the table lacks.
-    if !stored {
-        store::update(repo, config, &mut findings);
+    // The new files are read into the store, and whatever else it lacks.
+    // Then each source that got one is checked as the table has it; a table
+    // that can't be read is reported, and the files are in place all the same.
+    if store::update(repo, config, &mut findings) {
+        for name in added {
+            load::source(repo, config, name, &mut findings)?;
+        }
     }
     write!(Stdout, "\n{}", findings.render(false))?;
     Ok(exit_code(&findings, false))
@@ -1030,15 +1031,4 @@ fn booked_refs(doc: &serde_json::Value) -> std::collections::BTreeSet<String> {
 /// Booked transactions without a usable reference: can't tell if they're new.
 fn booked_refs_missing(doc: &serde_json::Value) -> usize {
     booked_transactions(doc).filter(|t| t["entry_reference"].as_str().is_none_or(|r| r == "0")).count()
-}
-
-/// The source's earlier fetches: the fetched files in its directory, parsed.
-fn earlier_fetches(repo: &Repo, config: &Config, name: &str, dir: &str) -> Result<Vec<sources::RawFile>> {
-    let mut fetches = Vec::new();
-    for rel in manifest::raw_files(repo)? {
-        if rel.starts_with(&format!("{dir}/")) && rel.ends_with(".json") {
-            fetches.push(load::raw_file(repo, config, name, &rel)?);
-        }
-    }
-    Ok(fetches)
 }

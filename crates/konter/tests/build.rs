@@ -209,6 +209,23 @@ fn enable_banking_beside_an_export_and_snapshots() {
     assert!(build.journal.contains("original:-8.05 EUR"), "{}", build.journal);
 }
 
+/// `fetch` looks at a source's earlier fetches to see how far they reach and
+/// which transactions they have: the fetched files of that source, and no
+/// export.
+#[test]
+fn a_sources_earlier_fetches_are_its_fetched_files() {
+    let (repo, config) = fixture("eb");
+    let fetches = load::fetches(&repo, &config, "bank:a").expect("the fetches are read");
+    let rels: Vec<&str> = fetches.iter().map(|f| f.rel.as_str()).collect();
+    assert_eq!(rels, ["nordea/1234567890/eb-2026-02-03T10-00-00.json"]);
+    assert_eq!(fetches[0].rows.len(), 5);
+    assert_eq!(fetches[0].rows.iter().map(|t| t.booked).max(), Some(date(2026, 2, 2)));
+    let other = load::fetches(&repo, &config, "other:c").expect("the fetches are read");
+    assert_eq!(other.iter().map(|f| f.rel.as_str()).collect::<Vec<_>>(), ["other/42/eb-2026-02-03T10-00-00.json"]);
+    let (repo, config) = fixture("basic");
+    assert!(load::fetches(&repo, &config, "bank:a").expect("the fetches are read").is_empty());
+}
+
 #[test]
 fn suggestions_are_valid_rules_once_filled_in() {
     let (repo, config) = fixture("eb");

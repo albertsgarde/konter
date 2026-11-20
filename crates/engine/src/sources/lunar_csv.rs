@@ -1,8 +1,8 @@
 //! Lunar statement CSV export.
 //!
 //! `Date,Time,Title,Amount,Balance,Transaction ID`, UTF-8 with BOM, newest first.
-//! Rows with the same timestamp aren't reliably in order; the merge step orders
-//! them by running balance.
+//! Rows with the same timestamp aren't reliably in order; a build orders them
+//! by running balance (`chain`).
 
 use std::collections::BTreeMap;
 
