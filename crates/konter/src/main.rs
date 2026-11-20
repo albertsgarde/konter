@@ -709,7 +709,7 @@ fn add_export(
     let src = config.sources.get(&source_name).with_context(|| format!("unknown source {source_name}"))?;
     if !src.imported() {
         bail!(
-            "{source_name} isn't imported yet. In config/sources.toml, give it `number`, `id_prefix` and \
+            "{source_name} isn't imported yet. In config/sources.toml, give it `number` and \
              `formats = [\"{format}\"]` (and maybe `unmatched`), then run this again"
         );
     }

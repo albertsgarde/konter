@@ -1,8 +1,8 @@
 //! Reading raw bank data into [`BankTransaction`]s (docs/spec.md §4).
 
+mod chain;
 pub mod enable_banking;
 pub mod lunar_csv;
-pub mod merge;
 pub mod nordea_csv;
 pub mod stored;
 
@@ -15,7 +15,7 @@ use crate::findings::Findings;
 use crate::model::BankTransaction;
 use crate::store::Table;
 
-pub use merge::SourceData;
+pub use stored::SourceData;
 
 /// What a parser needs to know about the file it reads.
 pub struct FileContext {
@@ -34,7 +34,7 @@ pub struct RawFile {
     /// In file order.
     pub rows: Vec<BankTransaction>,
     /// Balances the bank reported, if the file (or its sidecar) has any.
-    pub snapshots: Vec<merge::Snapshot>,
+    pub snapshots: Vec<stored::Snapshot>,
     /// When the file was exported or fetched, if known.
     pub exported: Option<jiff::civil::Date>,
 }
@@ -105,9 +105,9 @@ pub struct BalanceSidecar {
     pub balance: crate::money::Amount,
 }
 
-fn parse_sidecar(rel: &str, text: &str) -> Result<merge::Snapshot> {
+fn parse_sidecar(rel: &str, text: &str) -> Result<stored::Snapshot> {
     let s: BalanceSidecar = toml::from_str(text).with_context(|| format!("parsing {rel}"))?;
-    Ok(merge::Snapshot { date: s.date.0, balance: s.balance.0, file: rel.to_string() })
+    Ok(stored::Snapshot { date: s.date.0, balance: s.balance.0, file: rel.to_string() })
 }
 
 /// All bank data, per source.
@@ -168,17 +168,6 @@ pub fn stored_source(
         findings.warn("data", format!("{name}: no raw data yet"));
     }
     let data = stored::from_table(name, config.source_start(source), table, raw, findings);
-    summarize(name, &data, findings);
-    data
-}
-
-/// Merges the parsed raw files of one imported source, and reports what came of it.
-pub fn merge_source(config: &Config, name: &str, raw: Vec<RawFile>, findings: &mut Findings) -> SourceData {
-    let source = &config.sources[name];
-    if raw.is_empty() {
-        findings.warn("data", format!("{name}: no raw data yet"));
-    }
-    let data = merge::merge(name, source, config.source_start(source), raw, findings);
     summarize(name, &data, findings);
     data
 }

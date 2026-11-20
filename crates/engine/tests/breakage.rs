@@ -18,24 +18,24 @@ use konter_engine::transfers::{Leg, pair};
 use rust_decimal::Decimal;
 
 /// `konter unmatched` prints `[pin."<id>"]` for every unmatched transaction,
-/// but pins (and later marks) only take IDs whose prefix is lowercase letters,
-/// while sources.toml used to take any `id_prefix`. A second account named
-/// `n2`, or one called `nordea-main`, could never have a transaction pinned.
+/// so the ID a transaction has must be one a pin takes. It once wasn't, when
+/// IDs began with a prefix from sources.toml that could hold a digit or a dash.
 #[test]
-fn every_id_konter_assigns_can_be_pinned() {
-    for prefix in ["n2", "nordea-main"] {
-        let text = NORDEA.replace("id_prefix = \"ba\"", &format!("id_prefix = {prefix:?}"));
-        // Refusing the prefix up front would be fine too.
-        let Ok(config) = Config::parse(&text, "config/sources.toml") else { continue };
-        let csv = nordea_csv(&[("2026/01/05", "-50,00", "Groceries", "950,00")]);
-        let rel = nordea_rel("2026-01-31 10.00.00");
-        let build = build(&config, rules(&config, &[]), &[], &[("bank:a", &rel, &csv)], date(2026, 1, 31));
-        let id = &build.loaded.sources["bank:a"].txs[0].id;
-        let stub = format!("[pin.{id:?}]\naccount = \"expenses:groceries\"\n");
-        if let Err(e) = Rules::load_str(&stub, "config/rules.toml", &config) {
-            panic!("id_prefix {prefix:?} is accepted, but its IDs can't be pinned: {e:#}");
-        }
-    }
+fn every_id_a_transaction_has_can_be_pinned() {
+    let config = config(NORDEA);
+    let csv = nordea_csv(&[("2026/01/05", "-50,00", "Groceries", "950,00")]);
+    let rel = nordea_rel("2026-01-31 10.00.00");
+    let build = build(&config, rules(&config, &[]), &[], &[("bank:a", &rel, &csv)], date(2026, 1, 31));
+    let id = &build.loaded.sources["bank:a"].txs[0].id;
+    let stub = format!("[pin.{id:?}]\naccount = \"expenses:groceries\"\n");
+    Rules::load_str(&stub, "config/rules.toml", &config).expect("the stub for a transaction's own ID loads");
+    // And what isn't an ID is refused, with what one looks like.
+    let refused =
+        Rules::load_str("[pin.\"ba-2026-01-05-abcdef\"]\naccount = \"expenses:groceries\"\n", "r.toml", &config)
+            .expect_err("not an ID");
+    assert!(format!("{refused:#}").contains("not a transaction ID (expected e.g. 3f2b8c1e-"), "{refused:#}");
+    let refused = Rules::load_str("[later.\"ba-2026-01-05-abcdef\"]\n", "r.toml", &config).expect_err("not an ID");
+    assert!(format!("{refused:#}").contains("later \"ba-2026-01-05-abcdef\": not a transaction ID"), "{refused:#}");
 }
 
 /// Transfer legs are paired closest first. Done greedily, one leg can take the
@@ -76,7 +76,6 @@ start = 2026-01-01
 bank = "other"
 number = "42"
 ledger = "assets:bank:c"
-id_prefix = "oc"
 formats = ["enable-banking"]
 unmatched = "allow"
 "#;
@@ -282,7 +281,7 @@ fn a_mid_day_export_and_a_later_one_agree() {
 fn the_first_days_order_follows_the_running_balance() {
     let config = config(
         "[books]\nstart = 2026-01-01\n\n[sources.\"lunar:b\"]\nbank = \"lunar\"\nnumber = \"555\"\n\
-         ledger = \"assets:bank:b\"\nid_prefix = \"lb\"\nformats = [\"lunar-csv\"]\nunmatched = \"allow\"\n",
+         ledger = \"assets:bank:b\"\nformats = [\"lunar-csv\"]\nunmatched = \"allow\"\n",
     );
     // From 1000: a charge of 50 and its refund in the same minute, then a coffee.
     let statement = "Date,Time,Title,Amount,Balance,Transaction ID\n\

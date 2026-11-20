@@ -276,61 +276,58 @@ fn split_history(rng: &mut Rng, size: usize, mid_day: bool) -> Exports {
     Exports { whole: export_csv(&rows), parts }
 }
 
-fn merge(config: &Config, exports: &[String]) -> (SourceData, Findings) {
+/// The transactions of `bank:a` that a history's `exports` come to, the way
+/// a build has them, with what loading them found.
+fn exported(config: &Config, exports: &[String]) -> (SourceData, Findings) {
+    let rels: Vec<String> = (1..=exports.len()).map(|k| nordea_rel(&format!("2026-02-{k:02} 10.00.00"))).collect();
+    let files: Vec<(&str, &str, &str)> =
+        rels.iter().zip(exports).map(|(rel, export)| ("bank:a", rel.as_str(), export.as_str())).collect();
     let mut findings = Findings::default();
-    let raw = exports
-        .iter()
-        .enumerate()
-        .map(|(k, export)| {
-            let rel = nordea_rel(&format!("2026-02-{:02} 10.00.00", k + 1));
-            sources::parse_raw(config, "bank:a", &rel, export, None).expect("the generated export parses")
-        })
-        .collect();
-    let data = sources::merge_source(config, "bank:a", raw, &mut findings);
-    (data, findings)
+    let mut loaded = common::load(config, &files, &mut findings);
+    (loaded.sources.remove("bank:a").expect("the config has bank:a"), findings)
 }
 
-/// What a merge gives: every transaction with its ID, in booking order.
-fn merged_rows(data: &SourceData) -> Vec<String> {
+/// A source's transactions in booking order, without their IDs.
+fn in_order(data: &SourceData) -> Vec<String> {
     data.txs
         .iter()
         .map(|t| {
             format!(
                 "{} {} {} {:?}",
-                t.id,
-                t.amount,
-                t.balance_after.expect("the generated rows have a running balance"),
+                t.booked,
+                fmt_num(t.amount),
+                fmt_num(t.balance_after.expect("the generated rows have a running balance")),
                 t.description
             )
         })
         .collect()
 }
 
-/// "Any number of overlapping files is fine; merging sorts them out": the
-/// same history, however it's split into exports, gives the same
-/// transactions with the same IDs as one export of all of it, and no errors.
-fn check_merging(case: &Exports) -> Result<(), String> {
+/// "Any number of overlapping files is fine": the same history, however
+/// it's split into exports, gives the same transactions in the same order
+/// as one export of all of it, and no errors.
+fn check_exports(case: &Exports) -> Result<(), String> {
     let config = config(NORDEA);
-    let (alone, _) = merge(&config, std::slice::from_ref(&case.whole));
-    let (split, findings) = merge(&config, &case.parts);
-    let (want, got) = (merged_rows(&alone), merged_rows(&split));
-    if want == got && !findings.has_errors() {
+    let (alone, _) = exported(&config, std::slice::from_ref(&case.whole));
+    let (split, findings) = exported(&config, &case.parts);
+    let (want, got) = (in_order(&alone), in_order(&split));
+    if want == got && !findings.has_errors() && findings.count(Severity::Warning) == 0 {
         return Ok(());
     }
     Err(format!("expected:\n  {}\ngot:\n  {}\n{}", want.join("\n  "), got.join("\n  "), findings.render(true)))
 }
 
 #[test]
-fn merging_whole_day_exports_is_like_merging_one() {
-    check_cases("merging-whole-days", 500, |rng, size| split_history(rng, size, false), check_merging);
+fn whole_day_exports_build_like_one_export() {
+    check_cases("exports-whole-days", 500, |rng, size| split_history(rng, size, false), check_exports);
 }
 
 #[test]
-fn merging_exports_taken_during_the_day_is_like_merging_one() {
-    check_cases("merging-mid-day", 500, |rng, size| split_history(rng, size, true), check_merging);
+fn exports_taken_during_the_day_build_like_one_export() {
+    check_cases("exports-mid-day", 500, |rng, size| split_history(rng, size, true), check_exports);
 }
 
-// ── IDs don't depend on which files there are (docs/spec.md §4) ────────
+// ── Files arrive in any order (docs/spec.md §4) ────────────────────────
 
 /// A Lunar account, exported and fetched.
 const LUNAR: &str = r#"
@@ -341,7 +338,6 @@ start = 2026-01-01
 bank = "lunar"
 number = "555"
 ledger = "assets:bank:b"
-id_prefix = "lb"
 formats = ["lunar-csv", "enable-banking"]
 unmatched = "allow"
 "#;
@@ -433,40 +429,34 @@ fn arrivals(rng: &mut Rng, size: usize, lunar: bool, any_part: bool) -> Arrivals
     Arrivals { lunar, whole: file(0, 0..rows.len(), false), parts }
 }
 
-/// Every transaction with its ID, sorted: what a pin on that ID would map.
-fn identified(data: &SourceData) -> Vec<String> {
-    let mut rows: Vec<String> =
-        data.txs.iter().map(|t| format!("{} {} {} {:?}", t.id, t.booked, fmt_num(t.amount), t.description)).collect();
-    rows.sort_unstable();
-    rows
-}
-
-/// "IDs must never change": as the files of a history arrive one by one,
-/// exports and fetches in any order, every transaction that's there has the
-/// ID it has in one export of the whole history. With all of them, the
-/// transactions are those of that export, and nothing is wrong.
+/// As the files of a history arrive, exports and fetches in any order, a
+/// build has only transactions of that history, each at most as often as
+/// the history has it. Once all the files have arrived it has every one of
+/// them, as one export of the whole history gives them, and nothing is
+/// wrong. (Before that a file may be missing, which the build may say.)
 fn check_arrivals(case: &Arrivals) -> Result<(), String> {
     let (config, source) = if case.lunar {
         (config(LUNAR), "lunar:b")
     } else {
         (config(&NORDEA.replace("[\"nordea-csv\"]", "[\"nordea-csv\", \"enable-banking\"]")), "bank:a")
     };
-    let merge = |files: &[File]| {
+    let built = |files: &[File]| {
+        let files: Vec<(&str, &str, &str)> = files.iter().map(|f| (source, f.rel.as_str(), f.text.as_str())).collect();
         let mut findings = Findings::default();
-        let raw = files
-            .iter()
-            .map(|f| sources::parse_raw(&config, source, &f.rel, &f.text, None).expect("the generated file parses"))
-            .collect();
-        (sources::merge_source(&config, source, raw, &mut findings), findings)
+        let mut loaded = common::load(&config, &files, &mut findings);
+        let data = loaded.sources.remove(source).expect("the config has the source");
+        let mut rows: Vec<String> =
+            data.txs.iter().map(|t| format!("{} {} {:?}", t.booked, fmt_num(t.amount), t.description)).collect();
+        rows.sort_unstable();
+        (rows, findings)
     };
-    let (whole, _) = merge(std::slice::from_ref(&case.whole));
-    let want = identified(&whole);
+    let (want, _) = built(std::slice::from_ref(&case.whole));
     for arrived in 1..=case.parts.len() {
-        let (data, findings) = merge(&case.parts[..arrived]);
-        let got = identified(&data);
+        let (got, findings) = built(&case.parts[..arrived]);
         let mut left = want.clone();
         let all_known = got.iter().all(|row| left.iter().position(|w| w == row).map(|i| left.swap_remove(i)).is_some());
-        let complete = arrived < case.parts.len() || (left.is_empty() && !findings.has_errors());
+        let sound = !findings.has_errors() && findings.count(Severity::Warning) == 0;
+        let complete = arrived < case.parts.len() || (left.is_empty() && sound);
         if !all_known || !complete {
             return Err(format!(
                 "with {arrived} of {} files:\n  {}\nfrom the whole history:\n  {}\n{}",
@@ -481,13 +471,13 @@ fn check_arrivals(case: &Arrivals) -> Result<(), String> {
 }
 
 #[test]
-fn a_nordea_id_is_the_same_whichever_files_have_arrived() {
-    check_cases("ids-nordea", 500, |rng, size| arrivals(rng, size, false, false), check_arrivals);
+fn a_nordea_accounts_files_build_into_its_history_as_they_arrive() {
+    check_cases("arrivals-nordea", 500, |rng, size| arrivals(rng, size, false, false), check_arrivals);
 }
 
 #[test]
-fn a_lunar_id_is_the_same_whichever_files_have_arrived() {
-    check_cases("ids-lunar", 500, |rng, size| arrivals(rng, size, true, false), check_arrivals);
+fn a_lunar_accounts_files_build_into_its_history_as_they_arrive() {
+    check_cases("arrivals-lunar", 500, |rng, size| arrivals(rng, size, true, false), check_arrivals);
 }
 
 /// What the store of transactions is for: as the files of a history are read
@@ -730,7 +720,6 @@ start = 2026-01-01
 bank = "nordea"
 number = "1234567890"
 ledger = "assets:bank:a"
-id_prefix = "ba"
 formats = ["nordea-csv"]
 unmatched = "allow"
 
@@ -738,7 +727,6 @@ unmatched = "allow"
 bank = "nordea"
 number = "2222222222"
 ledger = "assets:bank:b"
-id_prefix = "bb"
 formats = ["nordea-csv"]
 unmatched = "allow"
 

@@ -14,7 +14,7 @@ use konter_engine::store::{Conflict, Reading, Table, TransactionId};
 use rust_decimal::Decimal;
 
 const LUNAR: &str = "[books]\nstart = 2026-01-01\n\n[sources.\"lunar:b\"]\nbank = \"lunar\"\nnumber = \"555\"\n\
-     ledger = \"assets:bank:b\"\nid_prefix = \"lb\"\nformats = [\"lunar-csv\", \"enable-banking\"]\nunmatched = \"allow\"\n";
+     ledger = \"assets:bank:b\"\nformats = [\"lunar-csv\", \"enable-banking\"]\nunmatched = \"allow\"\n";
 
 const LUNAR_HEADER: &str = "Date,Time,Title,Amount,Balance,Transaction ID\n";
 

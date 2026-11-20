@@ -74,8 +74,6 @@ pub struct Source {
     pub iban: Option<String>,
     /// The hledger account this bank account is booked to.
     pub ledger: String,
-    /// Prefix for transaction IDs, e.g. `nl` → `nl-2025-06-11-7f3a9c`.
-    pub id_prefix: Option<String>,
     /// Formats raw data may come in. Empty means the account isn't imported.
     #[serde(default)]
     pub formats: Vec<Format>,
@@ -88,37 +86,11 @@ pub struct Source {
     pub before_start: Option<String>,
     /// Overrides `books.currency` for this account.
     pub currency: Option<String>,
-    /// With both CSV and Enable Banking data: CSV before this date, API from it on.
-    pub cutover: Option<ConfigDate>,
     /// Money in this account is set aside for something (donations, say): the
     /// spending report counts money moved in as gone, and leaves out the
     /// expenses paid from it.
     #[serde(default)]
     pub set_aside: bool,
-}
-
-/// What tells a source's transactions apart, and what their IDs are made
-/// from (docs/spec.md §4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Identity {
-    /// The bank's own reference for the transaction.
-    Reference,
-    /// Booking date, amount and the running balance after it.
-    Balance,
-}
-
-impl Source {
-    /// An ID must not depend on which files a transaction is in, so it's made
-    /// from what every file of the bank has. That's the bank's reference,
-    /// except for Nordea, whose exports have none: its exports and its fetched
-    /// data both have the running balance.
-    pub fn identity(&self) -> Identity {
-        if self.bank == "nordea" || self.formats.contains(&Format::NordeaCsv) {
-            Identity::Balance
-        } else {
-            Identity::Reference
-        }
-    }
 }
 
 /// Bank-level settings.
@@ -154,27 +126,12 @@ impl Config {
     }
 
     fn validate(&self) -> Result<()> {
-        let mut prefixes = BTreeMap::new();
         for (name, s) in &self.sources {
             if !name.contains(':') {
                 bail!("source {name:?}: names look like \"<bank>:<account>\"");
             }
-            if s.imported() {
-                let Some(prefix) = &s.id_prefix else {
-                    bail!("source {name:?} is imported, so it needs an id_prefix");
-                };
-                if !valid_id_prefix(prefix) {
-                    bail!(
-                        "source {name:?}: id_prefix {prefix:?} must be lowercase letters (a-z), or its \
-                         transactions' IDs couldn't be pinned"
-                    );
-                }
-                if s.number.is_none() {
-                    bail!("source {name:?} is imported, so it needs a number (its data directory)");
-                }
-                if let Some(other) = prefixes.insert(prefix.clone(), name.clone()) {
-                    bail!("sources {other:?} and {name:?} share id_prefix {prefix:?}");
-                }
+            if s.imported() && s.number.is_none() {
+                bail!("source {name:?} is imported, so it needs a number (its data directory)");
             }
             if s.before_start.is_some() && s.start.is_none() {
                 bail!("source {name:?}: before_start only makes sense together with start");
@@ -210,10 +167,4 @@ impl Config {
             .find(|(_, s)| s.imported() && Config::data_dir(s).as_deref() == Some(dir))
             .map(|(name, _)| name.as_str())
     }
-}
-
-/// Whether `prefix` can start a transaction ID: lowercase ASCII letters, as
-/// pins and later marks expect (`<prefix>-<date>-<hash>`, split on `-`).
-pub fn valid_id_prefix(prefix: &str) -> bool {
-    !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_lowercase())
 }

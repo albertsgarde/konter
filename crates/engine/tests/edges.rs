@@ -14,7 +14,7 @@ use konter_engine::rules::Rules;
 fn two_sources_cant_book_to_one_ledger_account() {
     let twice = format!(
         "{NORDEA}\n[sources.\"bank:b\"]\nbank = \"nordea\"\nnumber = \"2222222222\"\nledger = \"assets:bank:a\"\n\
-         id_prefix = \"bb\"\nformats = [\"nordea-csv\"]\n"
+         formats = [\"nordea-csv\"]\n"
     );
     let error = Config::parse(&twice, "config/sources.toml").expect_err("the config is refused");
     assert!(format!("{error:#}").contains("ledger account \"assets:bank:a\" is used by several sources"), "{error:#}");

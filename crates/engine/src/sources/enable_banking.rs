@@ -17,7 +17,7 @@ use rust_decimal::Decimal;
 use serde_json::Value;
 
 use super::FileContext;
-use super::merge::Snapshot;
+use super::stored::Snapshot;
 use crate::config::Format;
 use crate::model::{BankTransaction, Origin};
 use crate::money::parse_plain;

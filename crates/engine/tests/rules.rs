@@ -253,7 +253,7 @@ fn a_transfer_on_the_day_an_account_starts_goes_to_the_account() {
 fn an_unpaired_side_is_a_warning_within_the_window_of_either_end_of_the_other_accounts_data() {
     let text = format!(
         "{NORDEA}\n[sources.\"bank:b\"]\nbank = \"nordea\"\nnumber = \"2222222222\"\nledger = \"assets:bank:b\"\n\
-         id_prefix = \"bb\"\nformats = [\"nordea-csv\"]\nunmatched = \"allow\"\n"
+         formats = [\"nordea-csv\"]\nunmatched = \"allow\"\n"
     );
     let config = config(&text);
     let rule =

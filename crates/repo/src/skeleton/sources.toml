@@ -15,7 +15,6 @@ start = @START@
 # bank = "nordea"
 # number = "1234567890"            # its raw data goes in data/nordea/1234567890/
 # ledger = "assets:bank:main"      # the account it's booked to; declare it in accounts.toml
-# id_prefix = "nm"                 # transaction IDs look like nm-2026-01-31-7f3a9c
 # formats = ["enable-banking", "nordea-csv"]
 #
 # How Enable Banking knows the bank (`konter banks` lists the names), and how

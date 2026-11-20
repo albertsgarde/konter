@@ -29,7 +29,6 @@ start = 2026-01-01
 bank = "nordea"
 number = "1234567890"
 ledger = "assets:bank:a"
-id_prefix = "ba"
 formats = ["nordea-csv"]
 unmatched = "allow"
 "#;

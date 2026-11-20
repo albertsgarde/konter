@@ -18,10 +18,74 @@ use jiff::civil::Date;
 use rust_decimal::Decimal;
 
 use super::RawFile;
-use super::merge::{FileSummary, SourceData, in_chain_order, short};
+use super::chain::{in_chain_order, short};
 use crate::findings::Findings;
 use crate::model::{BankTransaction, Origin};
 use crate::store::{Stored, Table};
+
+/// Summary of one raw file.
+#[derive(Clone, Debug)]
+pub struct FileSummary {
+    pub rel: String,
+    pub count: usize,
+    pub first: Option<Date>,
+    pub last: Option<Date>,
+    /// When the file was exported or fetched, if known.
+    pub exported: Option<Date>,
+}
+
+/// A balance the bank reported at the end of a date (from an API fetch or
+/// recorded with `add-export --balance`).
+#[derive(Clone, Debug)]
+pub struct Snapshot {
+    pub date: Date,
+    pub balance: Decimal,
+    pub file: String,
+}
+
+/// A source's transactions, in booking order.
+#[derive(Debug)]
+pub struct SourceData {
+    pub txs: Vec<BankTransaction>,
+    /// Whether every transaction has a running balance (then the chain is checked).
+    pub has_running_balance: bool,
+    /// Balance before the first transaction, from running balances or a snapshot.
+    pub opening: Option<Decimal>,
+    /// Balance snapshots, used as assertions when there are no running balances.
+    pub snapshots: Vec<Snapshot>,
+    pub files: Vec<FileSummary>,
+    pub chain_ok: bool,
+    /// The IDs of the table's rows that count as another transaction (joined
+    /// to it, or maybe it and not settled yet), each with that one's ID.
+    pub aliases: BTreeMap<String, String>,
+    /// The IDs of the table's transactions from before the source's start.
+    pub before_start: BTreeSet<String>,
+}
+
+impl SourceData {
+    pub fn first(&self) -> Option<Date> {
+        self.txs.first().map(|t| t.booked)
+    }
+
+    pub fn last(&self) -> Option<Date> {
+        self.txs.last().map(|t| t.booked)
+    }
+
+    /// The last date the data is known to be complete for: the latest export
+    /// or fetch date, or else the last transaction.
+    pub fn covered_until(&self) -> Option<Date> {
+        let exported = self.files.iter().filter_map(|f| f.exported).max();
+        match (exported, self.last()) {
+            (Some(e), Some(l)) => Some(e.max(l)),
+            (e, l) => e.or(l),
+        }
+    }
+
+    /// Whether `date` lies within the period this source has data for.
+    pub fn covers(&self, date: Date) -> bool {
+        matches!((self.first(), self.last()), (Some(a), Some(b)) if a <= date && date <= b)
+    }
+}
 
 /// A raw row, and how many rows its file has on its day.
 type Copy<'a> = (&'a BankTransaction, usize);
@@ -175,12 +239,11 @@ pub fn from_table(
             .details(conflicts);
     }
 
-    // Step 3. Transactions that look alike keep the order they are in now.
+    // Step 3.
     let has_running_balance = !txs.is_empty() && txs.iter().all(|t| t.balance_after.is_some());
     let mut chain_ok = true;
     if has_running_balance {
-        let places: Vec<u32> = (0..).take(txs.len()).collect();
-        (txs, chain_ok) = in_chain_order(name, txs, &places, findings);
+        (txs, chain_ok) = in_chain_order(name, txs, findings);
     }
     let opening = if has_running_balance {
         txs.first().and_then(|t| t.balance_before())

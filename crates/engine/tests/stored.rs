@@ -230,7 +230,7 @@ fn a_transaction_missing_from_a_file_that_covers_its_day_is_reported() {
 #[test]
 fn a_day_without_running_balances_is_in_time_and_file_order() {
     const LUNAR: &str = "[books]\nstart = 2026-01-01\n\n[sources.\"lunar:b\"]\nbank = \"lunar\"\nnumber = \"555\"\n\
-         ledger = \"assets:bank:b\"\nid_prefix = \"lb\"\nformats = [\"lunar-csv\", \"enable-banking\"]\n\
+         ledger = \"assets:bank:b\"\nformats = [\"lunar-csv\", \"enable-banking\"]\n\
          unmatched = \"allow\"\n";
     let config = config(LUNAR);
     let fetched = |rows: &[(&str, &str)]| {
@@ -264,4 +264,97 @@ fn a_day_without_running_balances_is_in_time_and_file_order() {
     let files = [files[0], files[1], ("lunar:b", "lunar/555/statement.csv", export)];
     let loaded = load(&config, &files, &mut Findings::default());
     assert_eq!(texts(&loaded), ["Second", "Third", "First"]);
+}
+
+/// The transactions of `bank:a` from exports (path relative to data/, text),
+/// with what loading them found.
+fn exported(config: &Config, exports: &[(&str, &str)]) -> (sources::SourceData, Findings) {
+    let files: Vec<(&str, &str, &str)> = exports.iter().map(|(rel, text)| ("bank:a", *rel, *text)).collect();
+    let mut findings = Findings::default();
+    let mut loaded = load(config, &files, &mut findings);
+    (loaded.sources.remove("bank:a").expect("the config has bank:a"), findings)
+}
+
+fn descriptions(data: &sources::SourceData) -> Vec<&str> {
+    data.txs.iter().map(|t| t.description.as_str()).collect()
+}
+
+/// A deposit and then a charge of the same amount chain either way round,
+/// and with no day before or after them nothing but the files' order says
+/// which it was. Where a row is in a file can only be compared within that
+/// file, so the day's order is the one in the export that has most of it.
+#[test]
+fn a_days_order_comes_from_the_export_with_most_of_the_day() {
+    let config = config(NORDEA);
+    // Taken after the deposit, before the charge.
+    let morning = nordea_csv(&[("2026/01/05", "50,00", "Deposit", "1.000,00")]);
+    let evening =
+        nordea_csv(&[("2026/01/05", "-50,00", "Charge", "950,00"), ("2026/01/05", "50,00", "Deposit", "1.000,00")]);
+    let (morning_rel, evening_rel) = (nordea_rel("2026-01-05 10.00.00"), nordea_rel("2026-01-05 20.00.00"));
+    let (data, findings) = exported(&config, &[(&morning_rel, &morning), (&evening_rel, &evening)]);
+    assert!(!findings.has_errors(), "{}", findings.render(true));
+    assert_eq!(descriptions(&data), ["Deposit", "Charge"]);
+    assert_eq!(data.opening, Some(950.into()));
+    // The first place a transaction was read from comes first.
+    let files: Vec<&str> = data.txs[0].origins.iter().map(|o| o.file.as_str()).collect();
+    assert_eq!(files, [morning_rel.as_str(), evening_rel.as_str()]);
+    assert_eq!(data.txs[0].origin().file, morning_rel);
+}
+
+/// A file may start and end partway through a day, so only a transaction
+/// strictly between a file's first and last day is missing from it.
+#[test]
+fn a_transaction_is_missing_from_a_file_only_strictly_inside_its_days() {
+    let config = config(NORDEA);
+    let early = nordea_csv(&[
+        ("2026/01/10", "-50,00", "Third", "850,00"),
+        ("2026/01/05", "-50,00", "Second", "900,00"),
+        ("2026/01/05", "-50,00", "First", "950,00"),
+    ]);
+    // Lacks "Second", on its first day.
+    let late = nordea_csv(&[
+        ("2026/01/15", "-50,00", "Fourth", "800,00"),
+        ("2026/01/10", "-50,00", "Third", "850,00"),
+        ("2026/01/05", "-50,00", "First", "950,00"),
+    ]);
+    let (early_rel, late_rel) = (nordea_rel("2026-01-10 10.00.00"), nordea_rel("2026-01-15 10.00.00"));
+    let (data, findings) = exported(&config, &[(&early_rel, &early), (&late_rel, &late)]);
+    assert!(!findings.has_errors(), "{}", findings.render(true));
+    assert_eq!(descriptions(&data), ["First", "Second", "Third", "Fourth"]);
+    let counts: Vec<(usize, Option<jiff::civil::Date>, Option<jiff::civil::Date>)> =
+        data.files.iter().map(|f| (f.count, f.first, f.last)).collect();
+    assert_eq!(
+        counts,
+        [(3, Some(date(2026, 1, 5)), Some(date(2026, 1, 10))), (3, Some(date(2026, 1, 5)), Some(date(2026, 1, 15)))]
+    );
+
+    // Lacks "Third", between its first day and its last.
+    let holed =
+        nordea_csv(&[("2026/01/15", "-50,00", "Fourth", "800,00"), ("2026/01/05", "-50,00", "First", "950,00")]);
+    let (_, findings) = exported(&config, &[(&early_rel, &early), (&late_rel, &holed)]);
+    let conflicts = found(&findings, Severity::Error, "overlap conflict");
+    assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+    assert!(conflicts[0].starts_with("bank:a: files disagree on 1 transactions"), "{conflicts:?}");
+    let missing = format!("2026-01-10     -50.00 \\\"Third\\\" (from {early_rel}) is missing from {late_rel}");
+    assert!(conflicts[0].contains(&missing), "{conflicts:?}");
+}
+
+/// A day whose rows can't be put in an order that follows the running
+/// balance is reported, also when there are too many orders to try them all:
+/// eight deposits and eight charges that undo each other, and one row that
+/// fits nowhere.
+#[test]
+fn a_day_that_doesnt_chain_is_reported_without_trying_every_order() {
+    let config = config(NORDEA);
+    let mut rows = vec![("2026/01/05", "-7,00", "Stray", "5.000,00")];
+    for _ in 0..8 {
+        rows.push(("2026/01/05", "-1,00", "Charge", "1.000,00"));
+        rows.push(("2026/01/05", "1,00", "Deposit", "1.001,00"));
+    }
+    let rel = nordea_rel("2026-01-05 20.00.00");
+    let (data, findings) = exported(&config, &[(&rel, &nordea_csv(&rows))]);
+    assert_eq!(data.txs.len(), 17);
+    assert!(!data.chain_ok);
+    let breaks = found(&findings, Severity::Error, "balance chain").concat();
+    assert!(breaks.contains("on 2026-01-05: the day's transactions don't form a chain"), "{breaks}");
 }
