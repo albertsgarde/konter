@@ -23,8 +23,8 @@ fn a_closed_pipe_ends_the_command_quietly() {
     assert_eq!(output.status.code(), Some(141));
 }
 
-/// `konter explain <id>` shows a transaction as the store has it, with the
-/// original fields of the raw file it was read from and where that is.
+/// `konter explain <id>` shows a transaction as the store has it, and where
+/// it was read from.
 #[test]
 fn explain_shows_a_transaction_and_where_it_was_read_from() {
     let explain = |id: &str| {
@@ -41,8 +41,6 @@ fn explain_shows_a_transaction_and_where_it_was_read_from() {
     for line in [
         "00000000-0000-4000-8000-000000000008  (bank:a)",
         "description   \"Top up\"",
-        "raw:",
-        "Beskrivelse     \"Top up\"",
         "data/nordea/1234567890/Konto 1234567890 - 2026-01-31 10.00.00.csv:3",
     ] {
         assert!(text.contains(line), "{line}\n{text}");

@@ -707,7 +707,6 @@ mod tests {
             counterparty_name: name.map(str::to_string),
             balance_after: None,
             bank_ref: None,
-            raw: BTreeMap::new(),
             origins: Vec::new(),
             order_hint: 0,
             unsettled: None,

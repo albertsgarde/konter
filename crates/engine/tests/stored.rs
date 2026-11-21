@@ -167,7 +167,6 @@ fn everything_a_build_takes_is_in_the_store() {
     let data = sources::stored_source(&config, "bank:a", &table, &read, &mut findings);
     assert_eq!(found(&findings, Severity::Warning, "data"), [""; 0]);
     assert_eq!(descriptions(&data), ["Groceries", "Coffee"]);
-    assert_eq!(data.txs[0].raw.get("Beskrivelse").map(String::as_str), Some("Groceries"));
     let (export, day) = (nordea_rel("2026-01-07 10.00.00"), |d| Some(date(2026, 1, d)));
     let summaries: Vec<_> = data.files.iter().map(|f| (f.rel.as_str(), f.count, f.first, f.last, f.exported)).collect();
     assert_eq!(summaries, [(export.as_str(), 2, day(5), day(6), day(7)), (FETCHED, 2, day(5), day(6), day(16))]);

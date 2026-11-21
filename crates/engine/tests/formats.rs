@@ -30,7 +30,7 @@ fn a_nordea_filename_gives_its_account_number_only_when_it_is_one() {
 }
 
 #[test]
-fn a_nordea_row_gives_the_other_party_the_currency_and_the_raw_fields() {
+fn a_nordea_row_gives_the_other_party_and_the_currency() {
     let text = format!(
         "{NORDEA_HEADER}\n\
          2026/01/08;-10,00;;DK99;;Kiosk;1040,00;;;\n\
@@ -46,8 +46,6 @@ fn a_nordea_row_gives_the_other_party_the_currency_and_the_raw_fields() {
     let shop = &rows[3];
     assert_eq!(shop.counterparty_name.as_deref(), Some("Shop A/S"));
     assert_eq!(shop.currency, "EUR");
-    assert_eq!(shop.raw.get("Beskrivelse").map(String::as_str), Some("Shop"));
-    assert!(!shop.raw.contains_key(""), "{:?}", shop.raw);
     // Without a name or a currency: no name, and the account's currency.
     assert_eq!((rows[2].counterparty_name.as_deref(), rows[2].currency.as_str()), (None, "DKK"));
 }
@@ -129,19 +127,6 @@ fn an_enable_banking_transaction_gives_its_sign_its_party_and_its_original_amoun
     assert_eq!(hints, [0, 1, 2, 3]);
     assert_eq!(enable_banking::fetched_date(FETCH), Some(date(2026, 1, 31)));
     assert_eq!(enable_banking::fetched_date("not a fetch"), None);
-}
-
-/// `raw.<field>` conditions see every field: a list of texts as one text, a
-/// list of anything else item by item.
-#[test]
-fn an_enable_banking_transactions_fields_are_all_in_raw() {
-    let (rows, _) = enable_banking::parse(FETCH, &ctx("fetch.json")).expect("the fetch parses");
-    let raw = |field: &str| rows[0].raw.get(field).map(String::as_str);
-    assert_eq!(raw("remittance_information"), Some("Refund REF 123"));
-    assert_eq!(raw("debtor.name"), Some("Payer"));
-    assert_eq!((raw("charges[0].amount"), raw("charges[1].amount")), (Some("1"), Some("2")));
-    assert_eq!((raw("mixed[0]"), raw("mixed[1].k")), (Some("x"), Some("v")));
-    assert_eq!((raw("charges"), raw("mixed")), (None, None));
 }
 
 #[test]

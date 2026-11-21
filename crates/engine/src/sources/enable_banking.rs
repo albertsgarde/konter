@@ -9,8 +9,6 @@
 //! The responses are stored unmodified inside the envelope; everything below
 //! interprets them.
 
-use std::collections::BTreeMap;
-
 use anyhow::{Context, Result, bail};
 use jiff::civil::Date;
 use rust_decimal::Decimal;
@@ -55,40 +53,6 @@ fn amount_at(v: &Value, path: &[&str]) -> Result<Option<Decimal>> {
     }
 }
 
-/// Flattens a JSON object into `a.b.c` → text, for `raw.<field>` rule conditions.
-#[expect(clippy::wildcard_enum_match_arm, reason = "the kinds of JSON are fixed, and the rest are the scalars")]
-fn flatten(prefix: &str, v: &Value, out: &mut BTreeMap<String, String>) {
-    match v {
-        Value::Object(map) => {
-            for (k, v) in map {
-                let key = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
-                flatten(&key, v, out);
-            }
-        }
-        Value::Array(items) if items.iter().all(|i| !i.is_object() && !i.is_array()) => {
-            let parts: Vec<String> = items.iter().map(scalar).collect();
-            out.insert(prefix.to_string(), parts.join(" "));
-        }
-        Value::Array(items) => {
-            for (i, item) in items.iter().enumerate() {
-                flatten(&format!("{prefix}[{i}]"), item, out);
-            }
-        }
-        Value::Null => {}
-        other => {
-            out.insert(prefix.to_string(), scalar(other));
-        }
-    }
-}
-
-#[expect(clippy::wildcard_enum_match_arm, reason = "the kinds of JSON are fixed, and the rest print as they are")]
-fn scalar(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
-
 fn parse_transaction(t: &Value, index: usize, ctx: &FileContext) -> Result<Option<BankTransaction>> {
     if let Some(status) = str_at(t, &["status"])
         && status != "BOOK"
@@ -120,7 +84,7 @@ fn parse_transaction(t: &Value, index: usize, ctx: &FileContext) -> Result<Optio
         })
         .unwrap_or_default();
     // Nordea puts a reference code on a second line; the first line is the
-    // readable text. The full text stays in raw.remittance_information.
+    // readable text.
     let description = if !remittance.is_empty() {
         remittance.join("\n").lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_string()
     } else {
@@ -143,8 +107,6 @@ fn parse_transaction(t: &Value, index: usize, ctx: &FileContext) -> Result<Optio
         None => (None, None),
     };
     let bank_ref = str_at(t, &["entry_reference"]).filter(|r| *r != "0").map(str::to_string);
-    let mut raw = BTreeMap::new();
-    flatten("", t, &mut raw);
     Ok(Some(BankTransaction {
         id: String::new(),
         source: ctx.source.clone(),
@@ -161,7 +123,6 @@ fn parse_transaction(t: &Value, index: usize, ctx: &FileContext) -> Result<Optio
         counterparty_name,
         balance_after: amount_at(t, &["balance_after_transaction", "amount"])?,
         bank_ref,
-        raw,
         origins: vec![Origin { file: ctx.rel.clone(), line: index as u64 + 1 }],
         order_hint: i64::try_from(index).unwrap_or(i64::MAX),
         unsettled: None,
@@ -252,7 +213,6 @@ mod tests {
         assert_eq!(a.counterparty.as_deref(), Some("DK11"));
         assert_eq!(a.balance_after, Some(Decimal::from_str("-12.50").expect("a decimal")));
         assert_eq!(a.transaction_date, Some(Date::constant(2026, 10, 31)));
-        assert_eq!(a.raw.get("creditor.name").map(String::as_str), Some("Foreningen Eksempel"));
         let b = &rows[1];
         assert_eq!(b.booked, Date::constant(2026, 11, 4), "falls back to value_date");
         assert_eq!(b.description, "Shop");

@@ -1,7 +1,5 @@
 //! `when` conditions of pattern rules (docs/spec.md §5).
 
-use std::collections::BTreeMap;
-
 use anyhow::{Context, Result, bail};
 use jiff::civil::Date;
 use regex::Regex;
@@ -50,7 +48,6 @@ pub struct RawCondition {
     date: Option<ConfigDate>,
     date_from: Option<ConfigDate>,
     date_to: Option<ConfigDate>,
-    raw: Option<BTreeMap<String, String>>,
     any: Option<Vec<RawCondition>>,
     not: Option<Box<RawCondition>>,
 }
@@ -69,7 +66,6 @@ pub struct Condition {
     amount_range: Option<(Decimal, Decimal)>,
     date_from: Option<Date>,
     date_to: Option<Date>,
-    raw: Vec<(String, Regex)>,
     any: Option<Vec<Condition>>,
     not: Option<Box<Condition>>,
 }
@@ -100,12 +96,6 @@ impl Condition {
             amount_range,
             date_from,
             date_to,
-            raw: raw
-                .raw
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(field, pattern)| Ok((field, regex(&pattern)?)))
-                .collect::<Result<_>>()?,
             any: raw.any.map(|v| v.into_iter().map(Condition::compile).collect::<Result<_>>()).transpose()?,
             not: raw.not.map(|c| Condition::compile(*c).map(Box::new)).transpose()?,
         };
@@ -127,7 +117,6 @@ impl Condition {
             && self.amount_range.is_none()
             && self.date_from.is_none()
             && self.date_to.is_none()
-            && self.raw.is_empty()
             && self.any.is_none()
             && self.not.is_none()
     }
@@ -168,7 +157,6 @@ impl Condition {
             && self.amount_range.is_none_or(|(lo, hi)| lo <= t.amount && t.amount <= hi)
             && self.date_from.is_none_or(|d| d <= t.booked)
             && self.date_to.is_none_or(|d| t.booked <= d)
-            && self.raw.iter().all(|(field, re)| t.raw.get(field).is_some_and(|v| re.is_match(v)))
             && self.any.as_ref().is_none_or(|cs| cs.iter().any(|c| c.matches(t)))
             && self.not.as_ref().is_none_or(|c| !c.matches(t))
     }

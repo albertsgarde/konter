@@ -1,7 +1,5 @@
 //! Core data types: bank transactions in, ledger transactions out.
 
-use std::collections::BTreeMap;
-
 use jiff::civil::{Date, Time};
 use rust_decimal::Decimal;
 
@@ -34,8 +32,6 @@ pub struct BankTransaction {
     pub counterparty_name: Option<String>,
     pub balance_after: Option<Decimal>,
     pub bank_ref: Option<String>,
-    /// Every original field, for rules on format-specific data.
-    pub raw: BTreeMap<String, String>,
     /// All files this transaction appears in; the first one is its representative.
     pub origins: Vec<Origin>,
     /// Position within its file, lower = earlier. Breaks ties when ordering a day.

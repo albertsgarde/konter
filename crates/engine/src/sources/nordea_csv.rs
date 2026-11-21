@@ -3,8 +3,6 @@
 //! `Bogføringsdato;Beløb;Afsender;Modtager;Navn;Beskrivelse;Saldo;Valuta;Afstemt`,
 //! UTF-8 with BOM, newest transaction first.
 
-use std::collections::BTreeMap;
-
 use anyhow::{Context, Result, bail};
 
 use super::FileContext;
@@ -62,12 +60,6 @@ pub fn parse(text: &str, ctx: &FileContext) -> Result<Vec<BankTransaction>> {
                 bail!("neither sender {sender:?} nor recipient {recipient:?} is account {}", ctx.number);
             }
             let counterparty = [&sender, &recipient].into_iter().find(|s| !s.is_empty() && !is_own(s)).cloned();
-            let raw: BTreeMap<String, String> = header
-                .iter()
-                .zip(record.iter())
-                .filter(|(h, _)| !h.is_empty())
-                .map(|(h, v)| (h.clone(), v.to_string()))
-                .collect();
             Ok(Some(BankTransaction {
                 id: String::new(),
                 source: ctx.source.clone(),
@@ -84,7 +76,6 @@ pub fn parse(text: &str, ctx: &FileContext) -> Result<Vec<BankTransaction>> {
                 counterparty_name: Some(get(4)).filter(|n| !n.is_empty()),
                 balance_after: Some(parse_danish(&get(6))?),
                 bank_ref: None,
-                raw,
                 origins: vec![Origin { file: ctx.rel.clone(), line }],
                 order_hint: -i64::try_from(line).unwrap_or(i64::MAX), // newest first
                 unsettled: None,

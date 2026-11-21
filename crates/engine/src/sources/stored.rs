@@ -117,7 +117,6 @@ fn transaction(name: &str, stored: &Stored, others: &[&Stored]) -> BankTransacti
         counterparty_name: stored.counterparty_name.clone(),
         balance_after: stored.balance,
         bank_ref: stored.reference.clone(),
-        raw: stored.raw.clone(),
         origins,
         order_hint: stored.place.map_or(0, |place| i64::from(place.nth)),
         unsettled: (!unsettled.is_empty()).then(|| unsettled.join("+")),

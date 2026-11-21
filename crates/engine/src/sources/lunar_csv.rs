@@ -4,8 +4,6 @@
 //! Rows with the same timestamp aren't reliably in order; a build orders them
 //! by running balance (`chain`).
 
-use std::collections::BTreeMap;
-
 use anyhow::{Context, Result, bail};
 use jiff::civil::Time;
 
@@ -37,8 +35,6 @@ pub fn parse(text: &str, ctx: &FileContext) -> Result<Vec<BankTransaction>> {
         let line = record.position().map(|p| p.line()).unwrap_or(0);
         let get = |i: usize| record.get(i).unwrap_or("").trim().to_string();
         let row = (|| -> Result<BankTransaction> {
-            let raw: BTreeMap<String, String> =
-                header.iter().zip(record.iter()).map(|(h, v)| (h.clone(), v.to_string())).collect();
             Ok(BankTransaction {
                 id: String::new(),
                 source: ctx.source.clone(),
@@ -55,7 +51,6 @@ pub fn parse(text: &str, ctx: &FileContext) -> Result<Vec<BankTransaction>> {
                 counterparty_name: None,
                 balance_after: Some(parse_danish(&get(4))?),
                 bank_ref: Some(get(5)).filter(|r| !r.is_empty()),
-                raw,
                 origins: vec![Origin { file: ctx.rel.clone(), line }],
                 order_hint: -i64::try_from(line).unwrap_or(i64::MAX), // newest first
                 unsettled: None,

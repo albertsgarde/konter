@@ -669,10 +669,6 @@ fn print_transaction(t: &BankTransaction) -> Result<()> {
     opt("cp. name", t.counterparty_name.clone())?;
     opt("balance after", t.balance_after.map(fmt_num))?;
     opt("bank ref", t.bank_ref.clone())?;
-    writeln!(Stdout, "  raw:")?;
-    for (k, v) in &t.raw {
-        writeln!(Stdout, "    {k:<15} {v:?}")?;
-    }
     writeln!(Stdout, "  found in:")?;
     for o in &t.origins {
         writeln!(Stdout, "    data/{}:{}", o.file, o.line)?;

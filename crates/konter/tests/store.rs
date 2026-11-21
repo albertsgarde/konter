@@ -201,11 +201,7 @@ fn what_the_reader_isnt_sure_of_is_marked_and_warned_of() {
         assert!(said.contains(&line), "{line}\n{said}");
     }
     let row = |id: &str| after.lines().find(|line| line.starts_with(id)).expect("the row is there").to_owned();
-    assert!(
-        row(moved).contains(&format!(",{coffee},,\"{{")) && row(moved).ends_with(",lunar/555/later.csv:3"),
-        "{}",
-        row(moved)
-    );
+    assert!(row(moved).ends_with(&format!(",{coffee},,lunar/555/later.csv:3")), "{}", row(moved));
     assert!(
         row(transfer).contains(",Overførsel,")
             && row(transfer).contains(r#"[{""at"":""lunar/555/later.csv:2"",""says"":{""text"":""Transfer""}}]"#),
@@ -287,7 +283,8 @@ fn a_table_that_cant_be_read_is_reported_and_left_alone() {
     assert_eq!(run.status.code(), Some(1), "{}", text(&run));
     assert!(
         text(&run).contains(
-            "the store wasn't brought up to date: reading store/bank-transactions.csv: the table's columns are"
+            "the store wasn't brought up to date: reading store/bank-transactions.csv: the table's first line: \
+             columns that this konter doesn't know: [\"not\", \"a\", \"table\"]"
         ),
         "{}",
         text(&run)
@@ -297,7 +294,7 @@ fn a_table_that_cant_be_read_is_reported_and_left_alone() {
     let built = build(&root);
     assert_eq!(built.status.code(), Some(2), "{}", text(&built));
     assert!(
-        text(&built).contains("error: reading store/bank-transactions.csv: the table's columns are [\"not\","),
+        text(&built).contains("error: reading store/bank-transactions.csv: the table's first line: columns that"),
         "{}",
         text(&built)
     );

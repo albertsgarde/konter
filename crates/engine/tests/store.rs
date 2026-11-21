@@ -317,15 +317,15 @@ fn the_table_reads_back_as_it_was_written() {
     assert_eq!(
         lines[0],
         "id,account,date,amount,currency,text,counterparty_name,counterparty,balance,reference,time,place,value_date,\
-         transaction_date,original_amount,original_currency,same_as,maybe_same_as,conflicts,raw,sources"
+         transaction_date,original_amount,original_currency,same_as,maybe_same_as,conflicts,sources"
     );
     assert!(
         lines[1].starts_with("01010101-0101-4101-8101-010101010101,bank:a,2026-01-05,-50,DKK,Groceries,,,100,"),
         "{text}"
     );
     assert!(lines[1].ends_with(",nordea/1234567890/Konto 1234567890 - 2026-01-07 10.00.00.csv:3"), "{text}");
-    // Its place within its day, and the fields its file has, as they are there.
-    assert!(lines[1].contains(",100,,,1/1,") && lines[1].contains(r#"""Beskrivelse"":""Groceries"""#), "{text}");
+    // Its place within its day.
+    assert!(lines[1].contains(",100,,,1/1,"), "{text}");
     assert!(lines[2].starts_with("02020202-"), "{text}");
     let back = Table::parse(&text).expect("it reads back");
     assert_eq!(back, table);
@@ -341,7 +341,20 @@ fn a_table_that_isnt_one_is_refused() {
     let text = table.write().expect("it can be written");
     let refused = |text: &str| format!("{:#}", Table::parse(text).expect_err("it isn't a table"));
 
-    assert!(refused(&text.replacen("id,account", "account,id", 1)).contains("the table's columns are"));
+    // The columns are found by their names.
+    let swapped = text.replacen("id,account,date,amount", "date,amount,id,account", 1);
+    let swapped: String = swapped
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                return format!("{line}\n");
+            }
+            let cells: Vec<&str> = line.splitn(5, ',').collect();
+            format!("{},{},{},{},{}\n", cells[2], cells[3], cells[0], cells[1], cells[4])
+        })
+        .collect();
+    assert_eq!(Table::parse(&swapped).expect("it reads"), table);
     let first = text.lines().nth(1).expect("a row");
     assert!(
         refused(&format!("{text}{first}\n"))
@@ -369,11 +382,21 @@ fn a_table_that_isnt_one_is_refused() {
         let said = refused(&format!("{HEADING}\n{}", line(1, &[("place", not_a_place)])));
         assert!(said.contains("isn't a place within a day, such as 3/7"), "{not_a_place}: {said}");
     }
-    assert!(refused(&format!("{HEADING}\n{}", line(1, &[("raw", "Groceries")]))).contains("original fields"));
+    // A heading with a column this konter doesn't know, or without one that
+    // every row has, or with one twice.
+    let said = refused(&text.replacen(",sources", ",sources,colour", 1));
+    assert!(said.contains("columns that this konter doesn't know: [\"colour\"]. A later konter"), "{said}");
+    assert!(refused(&text.replacen(",amount,", ",cost,", 1)).contains("doesn't know: [\"cost\"]"));
+    for required in ["id", "account", "date", "amount", "sources"] {
+        let columns: Vec<&str> = HEADING.split(',').filter(|c| *c != required).collect();
+        let said = refused(&format!("{}\n", columns.join(",")));
+        assert!(said.contains(&format!("there is no column \"{required}\"")), "{said}");
+    }
+    assert!(refused(&format!("{HEADING},text\n")).contains("the column \"text\" is there twice"));
 }
 
 const HEADING: &str = "id,account,date,amount,currency,text,counterparty_name,counterparty,balance,reference,time,place,\
-                       value_date,transaction_date,original_amount,original_currency,same_as,maybe_same_as,conflicts,raw,sources";
+                       value_date,transaction_date,original_amount,original_currency,same_as,maybe_same_as,conflicts,sources";
 
 fn id(n: u8) -> TransactionId {
     TransactionId::from_random([n; 16])
@@ -624,38 +647,48 @@ fn a_transactions_place_is_from_the_file_with_the_most_rows_on_its_day() {
     assert_eq!(place(&table, "Deposit"), Some(Place { nth: 1, of: 2 }));
     assert_eq!(table.len(), 3);
 
-    // The original fields are in the table's text, and read back.
+    // The place is in the table's text, and reads back.
     let deposit = table.transactions().find(|t| t.text.as_deref() == Some("Deposit")).expect("the deposit").clone();
-    assert_eq!(deposit.raw.get("Beskrivelse").map(String::as_str), Some("Deposit"));
     assert_eq!(deposit.cell("place").as_deref(), Some("1/2"));
     let text = table.write().expect("it can be written");
     assert_eq!(Table::parse(&text).expect("it reads back"), table);
 }
 
-/// A row from before places and original fields were kept gets them when
-/// its file is read again, and nothing else of it changes.
+/// A row from before places were kept gets one when its file is read again,
+/// and nothing else of it changes. A table from before that column was added
+/// reads as it is, with no places.
 #[test]
 fn a_row_without_a_place_gets_one_when_its_file_is_read_again() {
     let config = config(NORDEA);
     let export = nordea_csv(&[("2026/01/05", "-50,00", "Groceries", "100,00")]);
     let rel = nordea_rel("2026-01-07 10.00.00");
-    let mut old = table(&[line(1, &[("sources", &format!("{rel}:2"))])]);
+    let written = format!("{HEADING}\n{}", line(1, &[("sources", &format!("{rel}:2"))]));
+    let without = |text: &str| -> String {
+        let at = HEADING.split(',').position(|c| c == "place").expect("a column");
+        text.lines()
+            .map(|line| {
+                let mut cells: Vec<&str> = line.split(',').collect();
+                cells.remove(at);
+                format!("{}\n", cells.join(","))
+            })
+            .collect()
+    };
+    let mut old = Table::parse(&without(&written)).expect("a table without places reads");
+    assert_eq!(old, Table::parse(&written).expect("the table reads"));
     let was = old.get(&id(1)).expect("the row").clone();
-    assert_eq!((was.place, was.raw.len()), (None, 0));
+    assert_eq!(was.place, None);
     let reading = old.read("bank:a", &rows(&config, "bank:a", &rel, &export), &mut ids());
     assert_eq!(reading, Reading { matched: 1, ..Reading::default() });
     let now = old.get(&id(1)).expect("the row");
     assert_eq!(now.place, Some(Place { nth: 1, of: 1 }));
-    assert_eq!(now.raw.get("Beskrivelse").map(String::as_str), Some("Groceries"));
     assert_eq!(
         (&now.sources, &now.text, now.balance, &now.conflicts),
         (&was.sources, &was.text, was.balance, &was.conflicts)
     );
-    // Joining two rows, the kept one takes over the other's place and fields.
-    let mut two = table(&[line(1, &[]), line(2, &[("place", "2/3"), ("raw", r#""{""a"":""b""}""#)])]);
+    // Joining two rows, the kept one takes over the other's place.
+    let mut two = table(&[line(1, &[]), line(2, &[("place", "2/3")])]);
     two.join(&id(1), &id(2)).expect("one transaction");
-    let kept = two.get(&id(1)).expect("the kept row");
-    assert_eq!((kept.place, kept.raw.get("a").map(String::as_str)), (Some(Place { nth: 2, of: 3 }), Some("b")));
+    assert_eq!(two.get(&id(1)).expect("the kept row").place, Some(Place { nth: 2, of: 3 }));
 }
 
 /// The files that have been read are a table of their own: each with its
@@ -694,8 +727,11 @@ fn the_files_that_have_been_read_are_recorded_once() {
 
     let refused = |text: &str| format!("{:#}", Files::parse(text).expect_err("it isn't the files' table"));
     let heading = "file,account,exported,balance_date,balance";
-    assert!(refused("file,account\n").contains("the files' columns are"));
-    assert!(refused(&format!("{heading}\na.csv,bank:a,,\n")).contains("line 2 of the files"));
+    assert!(refused("file,account,colour\n").contains("columns that this konter doesn't know: [\"colour\"]"));
+    assert!(refused("file,exported\n").contains("there is no column \"account\""));
+    // Without the columns that may be empty, and in another order, it reads.
+    let short = Files::parse("account,file\nlunar:b,lunar/555/eb-1.json\n").expect("it reads");
+    assert_eq!(short.of("lunar:b").map(|f| (f.exported, f.balance)).collect::<Vec<_>>(), [(None, None)]);
     assert!(refused(&format!("{heading}\n,bank:a,,,\n")).contains("a file has a path and an account"));
     assert!(refused(&format!("{heading}\na.csv,,,,\n")).contains("a file has a path and an account"));
     assert!(refused(&format!("{heading}\na.csv,bank:a,soon,,\n")).contains("\"soon\" isn't a date"));

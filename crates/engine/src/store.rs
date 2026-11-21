@@ -14,7 +14,10 @@
 //!
 //! The books are built from the store alone (`sources::stored`): the raw
 //! files are where its rows came from, and a build doesn't look at them. So
-//! the store has everything of them that a build needs. Besides the table of
+//! the store has everything of them that a build needs.
+//!
+//! Both tables are plain CSV with a heading, and a column is found by its
+//! name: a column can be added without changing tables already written. Besides the table of
 //! transactions that is a second, small table, [`Files`]: the raw files that
 //! have been read, each with what it says as a whole.
 
@@ -109,9 +112,6 @@ pub struct Stored {
     /// The copies of it that say something else than this row about a field
     /// both have, for a person to settle. The row keeps what it had.
     pub conflicts: Vec<Conflict>,
-    /// Every field of the first copy of it that was read, as its file has
-    /// them: what rules on a format's own fields match.
-    pub raw: BTreeMap<String, String>,
     /// Every place in the raw files it was read from.
     pub sources: Vec<Origin>,
 }
@@ -137,7 +137,7 @@ pub struct Conflict {
 }
 
 /// The table's columns, in order. The ones that are awkward to read come last.
-const COLUMNS: [&str; 21] = [
+const COLUMNS: [&str; 20] = [
     "id",
     "account",
     "date",
@@ -157,9 +157,13 @@ const COLUMNS: [&str; 21] = [
     "same_as",
     "maybe_same_as",
     "conflicts",
-    "raw",
     "sources",
 ];
+
+/// The columns every row has something in. The others may be left out of a
+/// table altogether, and are then empty: a table written before a column
+/// was added reads as it is.
+const REQUIRED: [&str; 5] = ["id", "account", "date", "amount", "sources"];
 
 /// Between the places in `sources`: no path under `data/` has one.
 const BETWEEN_PLACES: char = '|';
@@ -234,12 +238,33 @@ fn conflicts_of(value: &str) -> Result<Vec<Conflict>> {
     written.into_iter().map(conflict).collect()
 }
 
-/// A `raw` cell: a JSON object of the original fields, or nothing.
-fn raw_of(value: &str) -> Result<BTreeMap<String, String>> {
-    if value.is_empty() {
-        return Ok(BTreeMap::new());
+/// Where each of `columns` is in a table whose first line is `header`, so
+/// that the columns can be in any order and a table can lack all but the
+/// `required` ones. A column that isn't one of `columns` is refused: the
+/// table may have been written by a later konter, and writing it back
+/// without that column would lose what is in it.
+fn columns_at<const N: usize>(
+    header: &csv::StringRecord,
+    columns: &[&str; N],
+    required: &[&str],
+) -> Result<[Option<usize>; N]> {
+    let unknown: Vec<&str> = header.iter().filter(|name| !columns.contains(name)).collect();
+    if !unknown.is_empty() {
+        bail!(
+            "columns that this konter doesn't know: {unknown:?}. A later konter may have written them; \
+             use that one, since writing the table back without them would lose what is in them"
+        );
     }
-    serde_json::from_str(value).with_context(|| format!("{value:?} isn't a transaction's original fields"))
+    let at = columns.map(|column| header.iter().position(|name| name == column));
+    for (column, at) in columns.iter().zip(&at) {
+        if at.is_none() && required.contains(column) {
+            bail!("there is no column {column:?}");
+        }
+        if header.iter().filter(|name| name == column).count() > 1 {
+            bail!("the column {column:?} is there twice");
+        }
+    }
+    Ok(at)
 }
 
 /// A JSON cell, empty when there's nothing to say.
@@ -277,12 +302,11 @@ impl Stored {
             same_as: None,
             maybe_same_as: None,
             conflicts: Vec::new(),
-            raw: row.raw.clone(),
             sources: row.origins.clone(),
         }
     }
 
-    fn from_cells(cells: &[&str; 21]) -> Result<Stored> {
+    fn from_cells(cells: &[&str; 20]) -> Result<Stored> {
         let [
             id,
             account,
@@ -303,7 +327,6 @@ impl Stored {
             same_as,
             maybe_same_as,
             conflicts,
-            raw,
             sources,
         ] = *cells;
         if account.is_empty() {
@@ -332,12 +355,11 @@ impl Stored {
             same_as: parsed(same_as, TransactionId::parse)?,
             maybe_same_as: parsed(maybe_same_as, TransactionId::parse)?,
             conflicts: conflicts_of(conflicts)?,
-            raw: raw_of(raw)?,
             sources: sources_of(sources)?,
         })
     }
 
-    fn cells(&self) -> [String; 21] {
+    fn cells(&self) -> [String; 20] {
         let places: Vec<String> = self.sources.iter().map(place).collect();
         let conflicts: Vec<WrittenConflict> =
             self.conflicts.iter().map(|c| WrittenConflict { at: place(&c.place), says: c.says.clone() }).collect();
@@ -361,7 +383,6 @@ impl Stored {
             written(self.same_as.as_ref(), TransactionId::to_string),
             written(self.maybe_same_as.as_ref(), TransactionId::to_string),
             json_cell(&conflicts, conflicts.is_empty()),
-            json_cell(&self.raw, self.raw.is_empty()),
             places.join(&BETWEEN_PLACES.to_string()),
         ]
     }
@@ -424,9 +445,6 @@ impl Stored {
 
     /// Takes over what `copy` has and this row lacks. What this row has stays.
     fn absorb(&mut self, copy: &Stored) {
-        if self.raw.is_empty() {
-            self.raw.clone_from(&copy.raw);
-        }
         if let Some(place) = copy.place {
             self.take_place(place);
         }
@@ -501,20 +519,13 @@ impl Table {
     pub fn parse(text: &str) -> Result<Table> {
         let mut reader = csv::ReaderBuilder::new().from_reader(text.as_bytes());
         let header = reader.headers().context("the table's first line")?;
-        if !header.iter().eq(COLUMNS) {
-            bail!("the table's columns are {:?}, not {COLUMNS:?}", header.iter().collect::<Vec<_>>());
-        }
+        let at = columns_at(header, &COLUMNS, &REQUIRED).context("the table's first line")?;
         let mut rows = BTreeMap::new();
         for (i, record) in reader.records().enumerate() {
             let line = i + 2;
             let record = record.with_context(|| format!("line {line} of the table"))?;
-            let cells: Vec<&str> = record.iter().collect();
-            let cells: &[&str; 21] = cells
-                .as_slice()
-                .try_into()
-                .ok()
-                .with_context(|| format!("line {line} of the table has {} cells", record.len()))?;
-            let row = Stored::from_cells(cells).with_context(|| format!("line {line} of the table"))?;
+            let cells = at.map(|at| at.and_then(|i| record.get(i)).unwrap_or_default());
+            let row = Stored::from_cells(&cells).with_context(|| format!("line {line} of the table"))?;
             if let Some(twice) = rows.insert(row.id.clone(), row) {
                 bail!("line {line} of the table: {} is there twice", twice.id);
             }
@@ -805,6 +816,7 @@ pub struct FileRead {
 }
 
 const FILE_COLUMNS: [&str; 5] = ["file", "account", "exported", "balance_date", "balance"];
+const FILE_REQUIRED: [&str; 2] = ["file", "account"];
 
 /// The raw files that have been read into the store, by path. A file is
 /// recorded once, when it's read, and its line stays as it is.
@@ -818,18 +830,14 @@ impl Files {
     pub fn parse(text: &str) -> Result<Files> {
         let mut reader = csv::ReaderBuilder::new().from_reader(text.as_bytes());
         let header = reader.headers().context("the files' first line")?;
-        if !header.iter().eq(FILE_COLUMNS) {
-            bail!("the files' columns are {:?}, not {FILE_COLUMNS:?}", header.iter().collect::<Vec<_>>());
-        }
+        let at = columns_at(header, &FILE_COLUMNS, &FILE_REQUIRED).context("the files' first line")?;
         let mut files = BTreeMap::new();
         for (i, record) in reader.records().enumerate() {
             let line = i + 2;
             let said = || format!("line {line} of the files");
             let record = record.with_context(said)?;
-            let cells: Vec<&str> = record.iter().collect();
-            let [file, account, exported, balance_date, balance] = cells.as_slice() else {
-                bail!("{} has {} cells", said(), cells.len());
-            };
+            let [file, account, exported, balance_date, balance] =
+                at.map(|at| at.and_then(|i| record.get(i)).unwrap_or_default());
             if file.is_empty() || account.is_empty() {
                 bail!("{}: a file has a path and an account", said());
             }

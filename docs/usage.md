@@ -17,7 +17,7 @@ What the tool does and why is in [spec.md](spec.md), and getting bank data in [f
    - `just more konter digest` prints what needs attention as a short message: the new transactions, numbered, and the build's errors and warnings (`--json` for a bot). Nothing when there's nothing to say.
    - Not now: mark a transaction `[later."<id>"]` (with an optional `note`) in its source's rule file. It stays unmapped, but stops counting against the source's policy and drops out of `konter unmatched`.
    - Going away: declare the trip in `config/rules/trips.toml` (`[trip.<name>]` with `account`, `from`, `to`), and the digest marks purchases made during it.
-   - `just more konter explain <id>` shows a transaction as the store has it, with its original fields and whether it's settled, which rules match it and what it produced.
+   - `just more konter explain <id>` shows a transaction as the store has it, where it was read from and whether it's settled, which rules match it and what it produced.
    - Edit the source's file in `config/rules/` (for example `nordea/main.toml`; your books' `config/rules/README.md` says which file holds what, and [rules.md](rules.md) how to write rules), declare new accounts in `config/accounts.toml`, and rebuild.
 4. **Commit:** raw data, the store (`store/`), rules and the generated journals together. `just more verify` confirms that the journals match a fresh build and that hledger is happy, with the working copy and with the pinned tool (below). It also checks `data/` against `data/MANIFEST`, and that the store has read every raw file.
 

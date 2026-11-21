@@ -83,8 +83,9 @@ A posting with both `amount` and `balance` asserts the balance. Hand-written tra
   - The counterparty name comes from the creditor or debtor.
   - The purchase date is kept (`purchased:` tag), but **booking date** is the transaction date throughout.
 - **The store of transactions** (`store` in the engine) is two tables in `store/`. `fetch` and `add-export` keep them up to date: after adding a raw file, they read every raw file in `data/MANIFEST` that the store hasn't read yet. `konter store` does only that.
-  - `bank-transactions.csv` has a row for each transaction in the raw files, also those from before a source's `start`. Besides the bank's fields, a row has `place`, its place within its day (`3/7`: the third of the seven rows a file has that day, from the file with the most rows that day, since places in two files can't be compared), and `raw`, the original fields of the first copy that was read, as a JSON object. A row read before these two columns existed gets them when its file is read again; nothing else of it changes, and nothing of it is compared again.
+  - `bank-transactions.csv` has a row for each transaction in the raw files, also those from before a source's `start`. Besides the bank's fields, a row has `place`, its place within its day (`3/7`: the third of the seven rows a file has that day, from the file with the most rows that day, since places in two files can't be compared). A row read before that column existed gets its place when its file is read again; nothing else of it changes, and nothing of it is compared again. The bank's other fields aren't kept: a field that a rule needs becomes a column of its own.
   - `files.csv` has a line for each raw file that has been read: its source, when it was exported or fetched, and the balance the bank reported in it, if any. A balance written down beside an export (`.balance.toml`) has a line of its own. A file counts as read when it's here, and its line never changes.
+  - Both are CSV with a heading, and a column is found by its name, so a column can be added without changing what's written. A table may lack a column that rows can leave empty. One with a column this konter doesn't know is refused: a later konter may have written it, and writing the table back would lose that column.
 - **IDs:** a transaction gets a random UUID when its row is added (`3f2b8c1e-5d4a-4f6b-9c7d-0a1b2c3d4e5f`) and keeps it. It's never worked out from the data again, so new data can't change it. An ID worked out from the bank's files could change when more data arrived: they show a transaction differently from one format to the next, and can't always tell two transactions apart. Pins and later marks name a transaction by its ID (§5), and so do the `bank-id` tag, `konter unmatched`, `konter explain` and the digest.
 - **Reading a file** never fails, and what the table has is never overwritten. Each row of the file ends one of three ways:
   - It's surely a transaction the table has, and fills in what that one lacks. Sure means the same bank reference, day and amount; or, without a reference to go by, the same day, amount and text, with nothing both have that says otherwise.
@@ -92,7 +93,7 @@ A posting with both `amount` and `balance` asserts the balance. Hand-written tra
   - Otherwise it's added as a row of its own. When it may be a transaction the table has, that one's ID goes in `maybe_same_as`.
 
   Rows marked `maybe_same_as` and copies in `conflicts` are for a person to settle. They're warned about when their file is read, the site's front page lists them for as long as they're unsettled (§10), and the transaction they concern is marked wherever it's shown (§7).
-- **A build takes everything from the store**, and reads no raw file. From the table it takes each source's transactions: their dates, amounts, text, counterparty, running balance, reference, place and original fields (`raw`, which rules can match on). From the files' table it takes how far each source's data reaches and the balance snapshots. It leaves out rows from before the source's `start` and rows joined to another (`same_as`).
+- **A build takes everything from the store**, and reads no raw file. From the table it takes each source's transactions: their dates, amounts, text, counterparty, running balance, reference and place. From the files' table it takes how far each source's data reaches and the balance snapshots. It leaves out rows from before the source's `start` and rows joined to another (`same_as`).
   - A row marked `maybe_same_as` counts as the transaction it may be until a person settles it, so the books have that transaction once, and the build warns (`store`). Such a row is nearly always the same transaction worded differently in another format, and where the bank gives a running balance, the chain breaks if it isn't. So a table with open cases still builds.
   - A pin or later mark on a row that counts as another transaction (joined, or not settled yet) applies to that transaction (§5). `konter explain` follows it the same way.
 - **Checks:**
@@ -120,7 +121,6 @@ Data quirks worth knowing:
   - `counterparty` / `counterparty_name` / `counterparty_name_re`;
   - `direction`, `amount`, `amount_range`;
   - `date`, `date_from`, `date_to`;
-  - `raw.<field>`: the original fields of the first copy that was read (§4);
   - `any`, `not`.
 
   Two pattern rules matching the same transaction is an error unless `priority` separates them. Rules or pins that match nothing are reported as dead, except a pin for a transaction from before its source's `start`.
